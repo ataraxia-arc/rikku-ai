@@ -10,7 +10,8 @@ Current implementation includes:
 - Portfolio, memory, patterns, research, risk, playbook, and settings routes
 - Supabase-ready email/password and Google authentication
 - A navigable Bitget onboarding flow with an advanced, read-only main-account API connection
-- Initial PostgreSQL schema with row-level security and private credential storage
+- PostgreSQL schema with row-level security, private credential storage, and Bitget import infrastructure
+- Server-side read-only Bitget import routes, normalizers, trade reconstruction, and import-status UI
 - Unit, security, type, lint, and production-build validation
 
 No sample account balances, trades, or findings are shown as real data. No exchange credentials or real trading information are included in this repository.
@@ -46,7 +47,7 @@ pnpm run lint
 pnpm run build
 ```
 
-The database migration is in `supabase/migrations/202609150001_initial_schema.sql`.
+Database migrations are in `supabase/migrations/`, including the initial schema, connection RPCs, and import infrastructure. The first real-data import has not run; it requires a server-only Supabase key. Do not commit that key or other credentials.
 
 ## Security posture
 
