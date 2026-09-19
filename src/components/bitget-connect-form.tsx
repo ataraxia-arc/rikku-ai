@@ -19,7 +19,7 @@ import { StartBitgetImportButton } from "@/components/start-bitget-import-button
 import { credentialFieldNames, validateBitgetCredentials, type CredentialFieldErrors, type CredentialFieldName } from "@/lib/bitget/credential-validation";
 
 type VerifyResult =
-  | { ok: true; connection: { externalUid: string; permission: string; keyFingerprint: string } }
+  | { ok: true; connection: { permission: "read-only"; adapterVersion: "uta-v3" } }
   | { ok: false; code: string };
 
 type ConnectionStatus = {

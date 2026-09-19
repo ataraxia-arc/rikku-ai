@@ -13,8 +13,8 @@ import {
 } from "lucide-react";
 
 const navigation = [
-  { label: "Home", href: "/home", icon: Home },
   { label: "Ask RIKKU", href: "/ask", icon: Sparkles },
+  { label: "Home", href: "/home", icon: Home },
   { label: "Portfolio", href: "/portfolio", icon: BriefcaseBusiness },
   { label: "Memory", href: "/memory", icon: BrainCircuit },
   { label: "Patterns", href: "/patterns", icon: ChartNoAxesCombined },
@@ -24,7 +24,12 @@ const navigation = [
   { label: "Settings", href: "/settings", icon: Settings },
 ] as const;
 
-export function AppShell({ active, children }: { active: string; children: React.ReactNode }) {
+function lastSyncedLabel(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.valueOf()) ? "Bitget connected" : `Last synced ${date.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" })} UTC`;
+}
+
+export function AppShell({ active, children, connectionStatus = null }: { active: string; children: React.ReactNode; connectionStatus?: string | null }) {
   return (
     <main className="app-frame">
       <aside className="sidebar">
@@ -53,9 +58,9 @@ export function AppShell({ active, children }: { active: string; children: React
         </nav>
 
         <div className="sidebar-foot">
-          <Link className="connection-state" href="/onboarding/bitget">
+          <Link className="connection-state" href={connectionStatus ? "/home" : "/onboarding/bitget"}>
             <span className="status-dot" />
-            <span>Connect Bitget</span>
+            <span>{connectionStatus ? `Bitget connected · ${lastSyncedLabel(connectionStatus)}` : "Connect Bitget"}</span>
           </Link>
           <div className="profile-row">
             <span className="avatar">R</span>
@@ -63,7 +68,7 @@ export function AppShell({ active, children }: { active: string; children: React
               <p>RIKKU User</p>
               <span>Personal workspace</span>
             </div>
-            <button type="button" aria-label="Open profile menu"><MoreHorizontal size={17} /></button>
+            <Link href="/settings" aria-label="Open workspace settings"><MoreHorizontal size={17} /></Link>
           </div>
         </div>
       </aside>

@@ -1,0 +1,77 @@
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import { AskClient } from "@/components/ask-client";
+import type { AskResponse } from "@/lib/ask/types";
+
+const response: AskResponse = {
+  version: "ask-deterministic-v1",
+  status: "completed",
+  mode: "analyst",
+  question: "Analyze my imported Bitget activity.",
+  finding: { headline: "12 imported fills across 5 instruments.", summary: "Descriptive imported-data analysis." },
+  evidence: [{ label: "Fills analyzed", value: "12" }],
+  confidence: { level: "low", reasons: ["12 fills are descriptive evidence."] },
+  limitations: ["Completed trades cannot yet be reconstructed because opening inventory inside the imported Bitget history window is unknown."],
+  marketContext: { available: true, summary: "Daily candle context matched 12 fills.", matchedFills: 12 },
+  dataWindow: { start: "2026-07-08T00:00:00.000Z", end: "2026-08-04T00:00:00.000Z", label: "Jul 8 – Aug 4, 2026" },
+  sources: [{ label: "Bitget fills" }, { label: "Bitget daily candles" }],
+  toolRuns: [
+    { key: "get_import_summary", label: "Reading imported activity", status: "completed", summary: "Imported activity read.", sources: ["Bitget import summary"] },
+    { key: "run_skeptic_check", label: "Validating evidence", status: "completed", summary: "Low confidence cap applied.", sources: ["Bitget import summary"] },
+  ],
+};
+
+type AskFetchResponse = { ok: boolean; json: () => Promise<{ ok: boolean; response: AskResponse }> };
+
+describe("Ask RIKKU client", () => {
+  it("auto-runs a deep-linked prompt and renders structured source-backed output", async () => {
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<AskFetchResponse>>(async () => ({ ok: true, json: async () => ({ ok: true, response }) }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<AskClient initialPrompt="Analyze my imported Bitget activity." />);
+
+    expect(await screen.findByText("12 imported fills across 5 instruments.")).toBeDefined();
+    expect(screen.getByText("FINDING")).toBeDefined();
+    expect(screen.getByText("EVIDENCE")).toBeDefined();
+    expect(screen.getByText("CONFIDENCE")).toBeDefined();
+    expect(screen.getByText("LIMITATIONS")).toBeDefined();
+    expect(screen.getByText("DATA WINDOW")).toBeDefined();
+    expect(screen.getByText("SOURCES USED")).toBeDefined();
+    expect(fetchMock).toHaveBeenCalledWith("/api/ask", expect.objectContaining({ method: "POST" }));
+    const firstRequest = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(JSON.parse(String(firstRequest.body))).toMatchObject({
+      question: "Analyze my imported Bitget activity.", mode: "analyst", history: [],
+    });
+  });
+
+  it("carries bounded prior user questions into an accessible follow-up request", async () => {
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<AskFetchResponse>>(async () => ({ ok: true, json: async () => ({ ok: true, response }) }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<AskClient initialPrompt="Analyze my imported Bitget activity." />);
+    await screen.findByText("12 imported fills across 5 instruments.");
+
+    const input = screen.getByLabelText(/Ask RIKKU about your imported trades/i);
+    fireEvent.change(input, { target: { value: "What about fees?" } });
+    fireEvent.submit(input.closest("form")!);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const secondRequest = fetchMock.mock.calls[1][1] as RequestInit;
+    expect(JSON.parse(String(secondRequest.body))).toMatchObject({
+      question: "What about fees?", history: ["Analyze my imported Bitget activity."],
+    });
+  });
+
+  it("shows a safe non-blank failure message when the API rejects a request", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, json: async () => ({ ok: false, code: "AUTH_REQUIRED" }) })));
+    render(<AskClient initialPrompt="Analyze my imported Bitget activity." />);
+    expect((await screen.findByRole("alert")).textContent).toContain("Your RIKKU session expired. Sign in again.");
+  });
+
+  it("shows only truthful planned analysis steps while an answer is running", () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => undefined)));
+    render(<AskClient initialPrompt="Analyze my imported Bitget activity." />);
+
+    expect(screen.getByText("Reading imported activity")).toBeDefined();
+    expect(screen.getByText("Running mode-specific evidence checks")).toBeDefined();
+    expect(screen.getByText("Validating evidence and limitations")).toBeDefined();
+    expect(screen.getByText("Preparing the answer")).toBeDefined();
+  });
+});

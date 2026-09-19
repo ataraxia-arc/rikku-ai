@@ -47,10 +47,10 @@ function makeReader(overrides?: { account?: unknown; orderCursorLoop?: boolean }
       case "/api/v3/account/assets": return { assets: [{ coin: "USDT", balance: "5", equity: "5", available: "5" }] };
       case "/api/v3/trade/history-orders":
         if (query.category === "SPOT") return { list: [order], ...(overrides?.orderCursorLoop ? { cursor: "repeat" } : {}) };
-        return { list: [] };
+        return { list: [], cursor: null };
       case "/api/v3/trade/fills": return { list: query.category === "SPOT" ? [fill] : [] };
       case "/api/v3/account/financial-records": return { list: [{ id: "synthetic-ledger", type: "fee", coin: "USDT", fee: "0.1", ts: String(clock - 9000) }] };
-      case "/api/v3/position/current-position": return [];
+      case "/api/v3/position/current-position": return { list: null };
       case "/api/v3/market/instruments": return [{ category: query.category, symbol: query.symbol, baseCoin: "BTC", quoteCoin: "USDT" }];
       case "/api/v3/market/candles": return [[String(clock - 86_400_000), "100", "110", "90", "105", "12", "1260"]];
       default: throw new Error("UNEXPECTED_PATH");
@@ -60,6 +60,36 @@ function makeReader(overrides?: { account?: unknown; orderCursorLoop?: boolean }
 }
 
 describe("Bitget import executor", () => {
+  it("accepts the observed fills terminal shape but rejects an ambiguous null list", async () => {
+    const { client } = makeReader();
+    const original = client.get.bind(client);
+    const terminal = { get: vi.fn(async (path: string, query: Record<string, string>) => path === "/api/v3/trade/fills" ? { list: null, cursor: null } : original(path, query)) } as unknown as Pick<BitgetReadOnlyClient, "get">;
+    const result = await executeBitgetImport({ client: terminal, writer: makeWriter(), nowMs: clock, historyDays: 1, requestSpacingMs: 0 });
+    expect(result.stage).toBe("complete");
+    expect(result.counts.fillsImported).toBe(0);
+    const ambiguous = { get: vi.fn(async (path: string, query: Record<string, string>) => path === "/api/v3/trade/fills" ? { list: null, cursor: "still-paging" } : original(path, query)) } as unknown as Pick<BitgetReadOnlyClient, "get">;
+    await expect(executeBitgetImport({ client: ambiguous, writer: makeWriter(), nowMs: clock, historyDays: 1, requestSpacingMs: 0 }))
+      .rejects.toMatchObject({ boundary: "BITGET_FILLS_READ" });
+  });
+
+  it("accepts Bitget's empty terminal page with a null cursor", async () => {
+    const { client } = makeReader();
+    const result = await executeBitgetImport({ client, writer: makeWriter(), nowMs: clock, historyDays: 1, requestSpacingMs: 0 });
+    expect(result.stage).toBe("complete");
+  });
+
+  it("keeps all history reads inside the moving 90-day limit for the worker lifetime", async () => {
+    const { client, calls } = makeReader();
+    await executeBitgetImport({ client, writer: makeWriter(), nowMs: clock, historyDays: 90, requestSpacingMs: 0 });
+    const history = calls.filter(({ path }) => ["/api/v3/trade/history-orders", "/api/v3/trade/fills", "/api/v3/account/financial-records"].includes(path));
+    expect(history.length).toBeGreaterThan(0);
+    for (const { query } of history) {
+      expect(Number(query.startTime)).toBeGreaterThanOrEqual(clock - 90 * 86_400_000 + 300_000);
+      expect(Number(query.endTime) - Number(query.startTime)).toBeLessThanOrEqual(30 * 86_400_000);
+      expect(Number(query.endTime)).toBeLessThanOrEqual(clock);
+    }
+  });
+
   it("imports real-shaped pages through read-only GETs and reports only persisted counts", async () => {
     const { client, calls } = makeReader();
     const writer = makeWriter();
@@ -77,7 +107,11 @@ describe("Bitget import executor", () => {
     expect(result.earliestRecordAt).toBe(new Date(clock - 12_000).toISOString());
     expect(result.latestRecordAt).toBe(new Date(clock - 9000).toISOString());
     expect(result.analysis).toEqual({ status: "insufficient_data", summary: "Insufficient data", sampleSize: 1 });
-    expect(calls.filter((call) => call.path === "/api/v3/account/financial-records")).toHaveLength(1);
+    const ledgerCalls = calls.filter((call) => call.path === "/api/v3/account/financial-records");
+    expect(ledgerCalls).toHaveLength(6);
+    expect(ledgerCalls.map((call) => call.query.category)).toEqual(["SPOT", "MARGIN", "USDT-FUTURES", "COIN-FUTURES", "USDC-FUTURES", "OTHER"]);
+    expect(calls.filter((call) => call.path === "/api/v3/position/current-position").map((call) => call.query.category))
+      .toEqual(["USDT-FUTURES", "COIN-FUTURES", "USDC-FUTURES"]);
     expect(calls.filter((call) => call.path === "/api/v3/trade/history-orders")).toHaveLength(5);
     expect(calls.every((call) => call.path.startsWith("/api/v3/"))).toBe(true);
     expect(stages.map((progress) => progress.stage)).toEqual(expect.arrayContaining([

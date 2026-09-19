@@ -171,9 +171,7 @@ async function verifyConnection(request: Request, requestId: string) {
     return NextResponse.json({
       ok: true,
       connection: {
-        externalUid: permissionCheck.userId,
         permission: "read-only",
-        keyFingerprint: apiKeyFingerprint,
         adapterVersion: "uta-v3",
       },
     });
@@ -222,7 +220,7 @@ async function readConnectionStatus() {
     const row = Array.isArray(legacy.data) ? legacy.data[0] : legacy.data;
     const verified = Boolean(row?.connected && row?.verified_at);
     return NextResponse.json({
-      ok: true, connected: verified, verified, connectionId: null,
+      ok: true, connected: verified, verified,
       storageReady: true, verifiedAt: row?.verified_at ?? null,
       lastSyncedAt: row?.last_synced_at ?? null,
     });
@@ -234,7 +232,6 @@ async function readConnectionStatus() {
     ok: true,
     connected: Boolean(status?.verified),
     verified: Boolean(status?.verified),
-    connectionId: status?.verified ? status.connection_id : null,
     storageReady: true,
     verifiedAt: status?.verified_at ?? null,
     lastSyncedAt: status?.last_synced_at ?? null,

@@ -116,6 +116,13 @@ export async function runBitgetImportJob({ jobId, connectionId, userId, requestI
     });
     stage = "complete";
     await update("completed");
+    const { error: onboardingError } = await supabase
+      .from("users")
+      .update({ onboarding_state: "complete", updated_at: new Date().toISOString() })
+      .eq("id", userId);
+    if (onboardingError) {
+      console.warn(JSON.stringify({ event: "rikku.import.onboarding_state_update_failed", requestId, jobId }));
+    }
     console.info(JSON.stringify({ event: "rikku.import.completed", requestId, jobId, durationMs: Date.now() - startedAt, counts: lastProgress }));
   } catch (error) {
     const safeCode = error instanceof BitgetImportError

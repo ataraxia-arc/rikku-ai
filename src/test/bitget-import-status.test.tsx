@@ -33,8 +33,8 @@ describe("Bitget import status", () => {
             id: "synthetic-job-id",
             status: "completed",
             stage: "completed",
-            counts: { orders: 12, fills: 9, trades: 4, fees: 3, assets: 2, positions: 0 },
-            coverage: { earliest: "2026-06-01T00:00:00.000Z", latest: "2026-09-01T00:00:00.000Z" },
+            counts: { orders: 12, fills: 12, trades: 0, fees: 43, assets: 0, positions: 0, instruments: 5, marketCandles: 435 },
+            coverage: { earliest: "2026-07-08T06:26:10.790Z", latest: "2026-08-04T01:02:55.542Z" },
             errorCode: null,
             errorStage: null,
           },
@@ -43,12 +43,14 @@ describe("Bitget import status", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<BitgetImportStatus jobId="synthetic-job-id" />);
 
-    expect(await screen.findByText("Real-data import completed")).toBeDefined();
-    expect(screen.getByText("12")).toBeDefined();
-    expect(screen.getByText("9")).toBeDefined();
-    expect(screen.getByText("4")).toBeDefined();
-    expect(screen.getByText(/Jun 1, 2026/)).toBeDefined();
-    expect(screen.getByText(/Sep 1, 2026/)).toBeDefined();
+    expect(await screen.findByText("Your Bitget data is connected.")).toBeDefined();
+    expect(screen.getAllByText("12")).toHaveLength(2);
+    expect(screen.getByText("43")).toBeDefined();
+    expect(screen.getByText("435")).toBeDefined();
+    expect(screen.getByText("Jul 8 – Aug 4, 2026")).toBeDefined();
+    expect(screen.getByText("Completed trades: not yet reconstructable.")).toBeDefined();
+    expect(screen.getByRole("link", { name: "Continue to RIKKU" }).getAttribute("href")).toBe("/home");
+    expect(screen.getByRole("link", { name: "Analyze my activity" }).getAttribute("href")).toBe("/ask?prompt=Analyze%20my%20imported%20Bitget%20activity");
     expect(fetchMock).toHaveBeenCalledWith("/api/imports/synthetic-job-id", { cache: "no-store" });
   });
 

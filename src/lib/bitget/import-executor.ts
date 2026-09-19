@@ -68,7 +68,13 @@ const instrumentSchema = z.object({
   sizeMultiplier: z.string().optional(),
 }).passthrough();
 
-const pageSchema = z.object({ list: z.array(z.unknown()), cursor: z.string().optional() }).passthrough();
+const pageSchema = z.union([
+  z.object({ list: z.array(z.unknown()), cursor: z.string().nullish() }).passthrough(),
+  // Observed successful Bitget fills terminal page; a null list with a live
+  // cursor remains invalid because it cannot prove pagination is complete.
+  z.object({ list: z.null(), cursor: z.null() }).passthrough()
+    .transform(() => ({ list: [] as unknown[], cursor: null })),
+]);
 const candleSchema = z.array(z.string()).min(6);
 
 export type ImportStage =
@@ -247,6 +253,7 @@ function dataList(value: unknown): unknown[] {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     const object = value as Record<string, unknown>;
     if (Array.isArray(object.list)) return object.list;
+    if (object.list === null && (object.cursor === undefined || object.cursor === null)) return [];
   }
   throw new Error("INVALID_LIST_RESPONSE");
 }
@@ -265,8 +272,11 @@ function historyWindows(endMs: number, historyDays: number) {
   if (!Number.isSafeInteger(endMs) || historyDays < 1 || historyDays > 90 || !Number.isInteger(historyDays)) {
     throw new Error("INVALID_IMPORT_WINDOW");
   }
-  // Both Bitget bounds are inclusive; do not step even 1 ms outside its 90-day access window.
-  const oldestMs = endMs - historyDays * DAY_MS + 1;
+  // The 90-day cutoff moves while this bounded worker runs. Keep five minutes
+  // inside it (four-minute runtime plus clock/network margin), rather than
+  // requesting a timestamp that expires before Bitget receives the request.
+  const historyBoundaryMarginMs = historyDays === 90 ? MAX_RUNTIME_MS + 60_000 : 1;
+  const oldestMs = endMs - historyDays * DAY_MS + historyBoundaryMarginMs;
   const windows: Array<{ startTime: string; endTime: string }> = [];
   let windowEnd = endMs;
   while (windowEnd >= oldestMs) {
@@ -544,28 +554,33 @@ export async function executeBitgetImport({
   }
 
   await emit("importing_fees");
-  // This account ledger is already UTA-wide; category fan-out would reread the same records.
-  for (const window of windows) {
-    await pages("/api/v3/account/financial-records", "BITGET_FINANCIAL_READ", window, async (rawRows) => {
-      const rows = rawRows.map((raw) => normalizedFinancialRecord(raw)).filter((row) => {
-        if (seenFinancialIds.has(row.external_record_id)) return false;
-        seenFinancialIds.add(row.external_record_id);
-        return true;
+  // Bitget requires category for this endpoint, including OTHER ledger events.
+  for (const category of [...bitgetCategories, "OTHER"]) {
+    for (const window of windows) {
+      await pages("/api/v3/account/financial-records", "BITGET_FINANCIAL_READ", { category, ...window }, async (rawRows) => {
+        const rows = rawRows.map((raw) => normalizedFinancialRecord(raw)).filter((row) => {
+          if (seenFinancialIds.has(row.external_record_id)) return false;
+          seenFinancialIds.add(row.external_record_id);
+          return true;
+        });
+        for (const row of rows) noteCoverage(row.recorded_at);
+        counts.financialRecordsImported += await persist(() => writer.upsertFinancialRecords(rows));
       });
-      for (const row of rows) noteCoverage(row.recorded_at);
-      counts.financialRecordsImported += await persist(() => writer.upsertFinancialRecords(rows));
-    });
+    }
   }
 
   await emit("importing_positions");
-  const positionsPayload = await read<unknown>("/api/v3/position/current-position", {}, "BITGET_POSITIONS_READ");
-  let positions: ImportPosition[];
-  try {
-    positions = dataList(positionsPayload).map((raw) => normalizedPosition(raw, new Date(nowMs).toISOString()));
-    for (const row of positions) noteSymbol(row.category, row.symbol);
-  } catch (error) {
-    if (error instanceof BitgetImportError) throw error;
-    throw new BitgetImportError("BITGET_POSITIONS_READ", progress.stage);
+  const positions: ImportPosition[] = [];
+  for (const category of bitgetCategories.filter((value) => value.endsWith("-FUTURES"))) {
+    const positionsPayload = await read<unknown>("/api/v3/position/current-position", { category }, "BITGET_POSITIONS_READ");
+    try {
+      const rows = dataList(positionsPayload).map((raw) => normalizedPosition(raw, new Date(nowMs).toISOString()));
+      for (const row of rows) noteSymbol(row.category, row.symbol);
+      positions.push(...rows);
+    } catch (error) {
+      if (error instanceof BitgetImportError) throw error;
+      throw new BitgetImportError("BITGET_POSITIONS_READ", progress.stage);
+    }
   }
   counts.positionsImported = await persist(() => writer.replacePositions(positions));
   await emit("importing_positions");

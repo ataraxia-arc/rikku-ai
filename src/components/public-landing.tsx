@@ -59,7 +59,7 @@ export function PublicLanding({ authenticated = false }: { authenticated?: boole
         </div>
         <div className="landing-nav-actions">
           {authenticated ? (
-            <Link className="landing-primary-nav" href="/home">Open App <ArrowRight size={14} /></Link>
+            <Link className="landing-primary-nav" href="/ask">Ask RIKKU <ArrowRight size={14} /></Link>
           ) : (
             <>
               <Link className="landing-login" href="/login">Log in</Link>
@@ -76,8 +76,8 @@ export function PublicLanding({ authenticated = false }: { authenticated?: boole
           <h1>RIKKU analyzes<br />the market<br /><em>and you.</em></h1>
           <p className="hero-support">RIKKU combines your real trading history, market context, behavioral patterns, risk, and persistent memory to help you understand how you make decisions—not just what the market is doing.</p>
           <div className="hero-actions">
-            <Link className="landing-cta-primary" href={authenticated ? "/home" : "/signup"}>
-              {authenticated ? "Open App" : "Get Started Free"} <ArrowRight size={16} />
+            <Link className="landing-cta-primary" href={authenticated ? "/ask" : "/signup"}>
+              {authenticated ? "Ask RIKKU" : "Get Started Free"} <ArrowRight size={16} />
             </Link>
             <a className="landing-cta-secondary" href="#how-it-works">See How RIKKU Works</a>
           </div>
@@ -184,7 +184,7 @@ export function PublicLanding({ authenticated = false }: { authenticated?: boole
         <span className="final-orbit" aria-hidden="true"><Sparkles size={20} /></span>
         <h2>Turn trading history into<br /><em>decision intelligence.</em></h2>
         <div className="hero-actions">
-          <Link className="landing-cta-primary" href={authenticated ? "/home" : "/signup"}>{authenticated ? "Open App" : "Get Started Free"} <ArrowRight size={16} /></Link>
+          <Link className="landing-cta-primary" href={authenticated ? "/ask" : "/signup"}>{authenticated ? "Ask RIKKU" : "Get Started Free"} <ArrowRight size={16} /></Link>
           {!authenticated && <Link className="landing-cta-secondary" href="/login">Log in</Link>}
         </div>
       </section>

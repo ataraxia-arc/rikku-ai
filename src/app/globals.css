@@ -51,7 +51,7 @@ a { color: inherit; text-decoration: none; }
 .profile-row div { min-width: 0; flex: 1; }
 .profile-row p { margin: 0 0 3px; color: #dbe2e5; font-size: 13px; }
 .profile-row span:not(.avatar) { display: block; overflow: hidden; color: #6f7c84; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.profile-row button { border: 0; background: none; color: #71808a; cursor: pointer; }
+.profile-row button, .profile-row a { border: 0; background: none; color: #71808a; cursor: pointer; }
 .workspace { width: 100%; max-width: 1540px; margin: 0 auto; padding: 34px clamp(24px, 4vw, 62px) 42px; overflow: hidden; }
 .topbar { display: flex; justify-content: space-between; gap: 24px; align-items: center; margin-bottom: 28px; }
 .date-label, .section-kicker { margin: 0 0 9px; color: #66757e; font: 600 10px/1.2 var(--font-mono); letter-spacing: .16em; }
@@ -290,6 +290,9 @@ a { color: inherit; text-decoration: none; }
 .onboarding-intro > p { margin: 0 0 11px; color: #54777d; font: 620 9px var(--font-mono); letter-spacing: .15em; }
 .onboarding-intro h1, .import-card h1 { margin: 0; font-size: clamp(30px, 4vw, 42px); font-weight: 530; letter-spacing: -.05em; }
 .onboarding-intro > span { display: block; max-width: 620px; margin: 13px auto 0; color: #7e8d94; font-size: 13px; line-height: 1.6; }
+.import-completion-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
+.home-import-summary { grid-template-columns: repeat(3, 1fr); margin-top: 20px; text-align: left; }
+.home-import-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 20px; }
 .connection-grid { display: grid; grid-template-columns: 1.35fr .65fr; gap: 14px; margin-top: 34px; }
 .connection-card { background: linear-gradient(145deg, rgba(22,31,37,.92), rgba(13,18,22,.96)); }
 .exchange-title { display: flex; align-items: center; gap: 13px; }
@@ -585,6 +588,8 @@ a { color: inherit; text-decoration: none; }
 .ask-zero-state { display: grid; justify-items: center; text-align: center; }
 .ask-zero-state > span { display: grid; place-items: center; width: 52px; height: 52px; margin-bottom: 18px; border: 1px solid rgba(0,240,255,.15); border-radius: 15px; color: #589498; background: rgba(0,240,255,.04); }
 .analysis-empty-response .landing-cta-primary { margin-top: 4px; }
+.analysis-progress { display: grid; gap: 7px; margin: 17px 0 0; padding: 0; list-style: none; color: #91a1a7; font-size: 11px; }
+.analysis-progress li::before { content: "›"; margin-right: 8px; color: var(--cyan); }
 .import-empty-card > p:not(.section-kicker) { color: #73838a; font-size: 11px; line-height: 1.65; }
 .import-awaiting { display: flex; justify-content: center; gap: 8px; margin: 24px 0; padding: 13px; border: 1px solid var(--border); border-radius: 10px; color: #63747b; font-size: 10px; }
 

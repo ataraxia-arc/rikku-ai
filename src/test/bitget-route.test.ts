@@ -242,7 +242,9 @@ describe("Bitget connection API configuration", () => {
     const result = await response.json();
 
     expect(response.status).toBe(200);
-    expect(result).toMatchObject({ ok: true, connection: { externalUid: "fixture-bitget-user", permission: "read-only" } });
+    expect(result).toEqual({ ok: true, connection: { permission: "read-only", adapterVersion: "uta-v3" } });
+    expect(JSON.stringify(result)).not.toContain("fixture-bitget-user");
+    expect(JSON.stringify(result)).not.toContain("test-api-key");
     expect(JSON.stringify(result)).not.toContain("test-secret-key");
     expect(bitgetFetch).toHaveBeenCalledOnce();
     expect(bitgetFetch.mock.calls[0][1].method).toBe("GET");
@@ -278,6 +280,32 @@ describe("Bitget connection API configuration", () => {
     const response = await submit(validCredentials);
     expect(response.status).toBe(200);
     expect(rpc).toHaveBeenCalledWith("upsert_bitget_connection", expect.objectContaining({ p_external_uid: "fixture-minimal-user" }));
+  });
+
+  it("does not expose a private connection identifier in connection status", async () => {
+    vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://example.supabase.co");
+    vi.stubEnv("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY", "sb_publishable_test");
+    vi.stubEnv("BITGET_CREDENTIAL_ENCRYPTION_KEY", Buffer.alloc(32, 7).toString("base64"));
+    vi.mocked(createSupabaseServerClient).mockResolvedValue({
+      auth: { getUser: async () => ({ data: { user: { id: "user-1" } } }) },
+      rpc: vi.fn().mockResolvedValue({
+        data: { verified: true, connection_id: "private-connection-id", verified_at: "2026-09-18T00:00:00.000Z", last_synced_at: null },
+        error: null,
+      }),
+    } as never);
+
+    const response = await GET();
+    expect(response.status).toBe(200);
+    const result = await response.json();
+    expect(result).toEqual({
+      ok: true,
+      connected: true,
+      verified: true,
+      storageReady: true,
+      verifiedAt: "2026-09-18T00:00:00.000Z",
+      lastSyncedAt: null,
+    });
+    expect(JSON.stringify(result)).not.toContain("private-connection-id");
   });
 
   it.each(["read_only", "readonly"])("accepts the documented %s spelling only with both required read scopes", async (permType) => {

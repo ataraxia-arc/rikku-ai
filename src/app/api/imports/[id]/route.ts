@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { withSafeRequestLog } from "@/lib/security/safe-request-log";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createSupabaseServiceClient, importWorkerConfigured } from "@/lib/supabase/service";
 
 export const runtime = "nodejs";
 
@@ -38,6 +39,20 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       const progress = data.progress && typeof data.progress === "object" && !Array.isArray(data.progress)
         ? data.progress as Record<string, unknown>
         : {};
+      // Import completion is the only state that advances onboarding. This is
+      // idempotent so a refreshed completion page is safe, including jobs that
+      // completed before the application was upgraded.
+      if (data.status === "completed" && importWorkerConfigured()) {
+        try {
+          await createSupabaseServiceClient()
+            .from("users")
+            .update({ onboarding_state: "complete", updated_at: new Date().toISOString() })
+            .eq("id", auth.user.id);
+        } catch {
+          // The import itself remains completed even if this convenience state
+          // update is temporarily unavailable. Routing also checks real jobs.
+        }
+      }
       return NextResponse.json({
         ok: true,
         job: {
@@ -51,6 +66,8 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
             fees: nonnegativeCount(progress.financialRecordsImported),
             assets: nonnegativeCount(progress.assetsImported),
             positions: nonnegativeCount(progress.positionsImported),
+            instruments: nonnegativeCount(progress.instrumentsImported),
+            marketCandles: nonnegativeCount(progress.marketSnapshotsImported),
           },
           coverage: {
             earliest: safeCoverageDate(progress.earliestRecordAt),

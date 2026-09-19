@@ -30,6 +30,8 @@ type ImportJob = {
     fees: number;
     assets: number;
     positions: number;
+    instruments: number;
+    marketCandles: number;
   };
   coverage: { earliest: string | null; latest: string | null };
   analysis: { status: "completed" | "insufficient_data" | null; sampleSize: number };
@@ -63,6 +65,18 @@ function dateLabel(value: string | null) {
   const date = new Date(value);
   if (Number.isNaN(date.valueOf())) return "Not reported";
   return `${date.toLocaleString("en-US", { timeZone: "UTC", dateStyle: "medium", timeStyle: "short" })} UTC`;
+}
+
+function coverageLabel(earliest: string | null, latest: string | null) {
+  if (!earliest || !latest) return "Not reported";
+  const start = new Date(earliest);
+  const end = new Date(latest);
+  if (Number.isNaN(start.valueOf()) || Number.isNaN(end.valueOf())) return "Not reported";
+  const short = new Intl.DateTimeFormat("en-US", { timeZone: "UTC", month: "short", day: "numeric" });
+  const long = new Intl.DateTimeFormat("en-US", { timeZone: "UTC", month: "short", day: "numeric", year: "numeric" });
+  return start.getUTCFullYear() === end.getUTCFullYear()
+    ? `${short.format(start)} – ${long.format(end)}`
+    : `${long.format(start)} – ${long.format(end)}`;
 }
 
 function jobErrorCopy(job: ImportJob) {
@@ -162,8 +176,8 @@ export function BitgetImportStatus({ jobId }: { jobId: string | null }) {
         </>
       ) : (
         <>
-          <h1>{job?.status === "completed" ? "Real-data import completed" : job?.status === "failed" ? "Import needs attention" : "Importing real Bitget data"}</h1>
-          <p>{job?.status === "queued" ? "The secure import job is queued." : job?.status === "running" ? `Current stage: ${stageLabel(job.stage)}.` : job?.status === "completed" ? "The available records have been imported. Review the actual coverage below." : "Progress below reflects only confirmed server results."}</p>
+          <h1>{job?.status === "completed" ? "Your Bitget data is connected." : job?.status === "failed" ? "Import needs attention" : "Importing real Bitget data"}</h1>
+          <p>{job?.status === "queued" ? "The secure import job is queued." : job?.status === "running" ? `Current stage: ${stageLabel(job.stage)}.` : job?.status === "completed" ? "Your available Bitget records are ready in RIKKU." : "Progress below reflects only confirmed server results."}</p>
           {connection === "connected" && <div className="import-awaiting"><CheckCircle2 size={17} /><span>Bitget connection verified</span></div>}
           {connection === "checking" && <div className="import-awaiting"><LoaderCircle className="spin" size={17} /><span>Checking stored connection</span></div>}
           {connection === "disconnected" && <div className="connection-result connection-result-error" role="alert">The stored Bitget connection is no longer active.</div>}
@@ -183,20 +197,27 @@ export function BitgetImportStatus({ jobId }: { jobId: string | null }) {
               <div className="import-list" aria-label="Actual imported counts">
                 <div><span>Orders imported</span><strong>{count(job.counts?.orders)}</strong></div>
                 <div><span>Fills imported</span><strong>{count(job.counts?.fills)}</strong></div>
-                <div><span>Trades reconstructed</span><strong>{count(job.counts?.trades)}</strong></div>
                 <div><span>Financial records imported</span><strong>{count(job.counts?.fees)}</strong></div>
-                <div><span>Assets imported</span><strong>{count(job.counts?.assets)}</strong></div>
-                <div><span>Positions imported</span><strong>{count(job.counts?.positions)}</strong></div>
+                <div><span>Instruments imported</span><strong>{count(job.counts?.instruments)}</strong></div>
+                <div><span>Market candles imported</span><strong>{count(job.counts?.marketCandles)}</strong></div>
               </div>
               <div className="import-list" aria-label="Actual data coverage">
-                <div><span>Earliest record</span><strong>{dateLabel(job.coverage?.earliest)}</strong></div>
-                <div><span>Latest record</span><strong>{dateLabel(job.coverage?.latest)}</strong></div>
+                {job.status === "completed" ? (
+                  <div><span>Coverage</span><strong>{coverageLabel(job.coverage?.earliest, job.coverage?.latest)}</strong></div>
+                ) : <><div><span>Earliest record</span><strong>{dateLabel(job.coverage?.earliest)}</strong></div><div><span>Latest record</span><strong>{dateLabel(job.coverage?.latest)}</strong></div></>}
               </div>
+              {job.status === "completed" && <p className="coverage-note">Completed trades: {job.counts?.trades === 0 ? "not yet reconstructable" : count(job.counts?.trades)}.</p>}
               <p className="coverage-note">Coverage reflects returned Bitget records, not a claim of all trading history.</p>
               {job.analysis?.status && (
                 <p className="coverage-note">First deterministic analysis: {job.analysis.status === "completed"
                   ? `completed using ${count(job.analysis.sampleSize)} reconstructed trades.`
                   : "Insufficient data."}</p>
+              )}
+              {job.status === "completed" && (
+                <div className="import-completion-actions" aria-label="Continue in RIKKU">
+                  <Link className="landing-cta-primary" href="/home">Continue to RIKKU</Link>
+                  <Link className="landing-cta-secondary" href="/ask?prompt=Analyze%20my%20imported%20Bitget%20activity">Analyze my activity</Link>
+                </div>
               )}
             </>
           )}
