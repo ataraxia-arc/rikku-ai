@@ -4,12 +4,16 @@ import { AskClient } from "@/components/ask-client";
 import type { AskResponse } from "@/lib/ask/types";
 
 const response: AskResponse = {
-  version: "ask-deterministic-v1",
+  version: "ask-evidence-v3",
   status: "completed",
   mode: "analyst",
+  answerKind: "analysis",
   question: "Analyze my imported Bitget activity.",
   finding: { headline: "12 imported fills across 5 instruments.", summary: "Descriptive imported-data analysis." },
+  interpretation: "Descriptive imported-data analysis.",
+  reasoningPoints: [{ kind: "uncertainty", statement: "The sample does not establish a persistent pattern.", rationale: "Completed trades are unavailable.", evidenceLabels: ["Fills analyzed"], test: "Compare the same signal after future imports." }],
   evidence: [{ label: "Fills analyzed", value: "12" }],
+  qualitativeEvidence: [],
   confidence: { level: "low", reasons: ["12 fills are descriptive evidence."] },
   limitations: ["Completed trades cannot yet be reconstructed because opening inventory inside the imported Bitget history window is unknown."],
   marketContext: { available: true, summary: "Daily candle context matched 12 fills.", matchedFills: 12 },
@@ -19,6 +23,8 @@ const response: AskResponse = {
     { key: "get_import_summary", label: "Reading imported activity", status: "completed", summary: "Imported activity read.", sources: ["Bitget import summary"] },
     { key: "run_skeptic_check", label: "Validating evidence", status: "completed", summary: "Low confidence cap applied.", sources: ["Bitget import summary"] },
   ],
+  suggestedFollowups: [],
+  reasoningStatus: "deterministic_fallback",
 };
 
 type AskFetchResponse = { ok: boolean; json: () => Promise<{ ok: boolean; response: AskResponse }> };
@@ -39,7 +45,7 @@ describe("Ask RIKKU client", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/ask", expect.objectContaining({ method: "POST" }));
     const firstRequest = fetchMock.mock.calls[0][1] as RequestInit;
     expect(JSON.parse(String(firstRequest.body))).toMatchObject({
-      question: "Analyze my imported Bitget activity.", mode: "analyst", history: [],
+      question: "Analyze my imported Bitget activity.", mode: "analyst", history: [], contextId: null,
     });
   });
 
@@ -69,9 +75,9 @@ describe("Ask RIKKU client", () => {
     vi.stubGlobal("fetch", vi.fn(() => new Promise(() => undefined)));
     render(<AskClient initialPrompt="Analyze my imported Bitget activity." />);
 
-    expect(screen.getByText("Reading imported activity")).toBeDefined();
-    expect(screen.getByText("Running mode-specific evidence checks")).toBeDefined();
-    expect(screen.getByText("Validating evidence and limitations")).toBeDefined();
-    expect(screen.getByText("Preparing the answer")).toBeDefined();
+    expect(screen.getByText("Reading Bitget activity…")).toBeDefined();
+    expect(screen.getByText("Analyzing imported activity…")).toBeDefined();
+    expect(screen.getByText("Running Skeptic validation…")).toBeDefined();
+    expect(screen.getByText("Preparing the answer…")).toBeDefined();
   });
 });

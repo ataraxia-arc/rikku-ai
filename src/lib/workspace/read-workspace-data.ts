@@ -1,6 +1,9 @@
 import "server-only";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createSupabaseAskDataSource } from "@/lib/ask/supabase-data-source";
+import { orchestrateAsk } from "@/lib/ask/orchestrator";
+import type { AskResponse } from "@/lib/ask/types";
 
 type ServerSupabaseClient = Awaited<ReturnType<typeof createSupabaseServerClient>>;
 type UnknownRecord = Record<string, unknown>;
@@ -89,12 +92,18 @@ export type PersonalRule = {
   confidence: string;
   status: string;
   createdAt: string | null;
+  editable: boolean;
 };
 
 export type WorkspaceProfile = {
   displayName: string | null;
   timezone: string | null;
   baseCurrency: string | null;
+};
+
+export type AiPreferences = {
+  defaultMode: "scout" | "analyst" | "investigator";
+  responseStyle: "concise" | "balanced" | "detailed";
 };
 
 function asRecord(value: unknown): UnknownRecord | null {
@@ -352,11 +361,27 @@ export async function readResearchData() {
 
 export async function readRiskData() {
   const connection = await readWorkspaceConnection();
-  return { connection, importSummary: connection.latestImport };
+  const analysis = await withAuthenticatedClient(null as AskResponse | null, async (supabase) => {
+    const { data, error } = await supabase.auth.getUser();
+    if (error || !data.user) return null;
+    const source = createSupabaseAskDataSource(supabase, data.user.id);
+    return orchestrateAsk({
+      source,
+      mode: "analyst",
+      question: "What risks can you currently measure?",
+      initialImport: await source.getLatestCompletedImport(),
+    });
+  });
+  return { connection, importSummary: connection.latestImport, analysis };
 }
 
 function conditionText(value: unknown): string {
   if (typeof value === "string") return value.trim().slice(0, 500) || "Conditions were not recorded.";
+  const object = asRecord(value);
+  if (object) {
+    const storedText = stringValue(object.text);
+    if (storedText) return storedText.slice(0, 500);
+  }
   if (Array.isArray(value)) {
     const conditions = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
     return conditions.length > 0 ? conditions.join("; ").slice(0, 500) : "Conditions were not recorded.";
@@ -387,7 +412,7 @@ export async function readPlaybookData() {
             ? "Linked RIKKU pattern"
             : "Evidence link not recorded";
         return id && category && thenAction && confidence && status
-          ? [{ id, category, ifConditions: conditionText(row.if_conditions), thenAction, evidence, confidence, status, createdAt: dateValue(row.created_at) }]
+          ? [{ id, category, ifConditions: conditionText(row.if_conditions), thenAction, evidence, confidence, status, createdAt: dateValue(row.created_at), editable: !stringValue(row.origin_memory_id) && !stringValue(row.origin_pattern_id) }]
           : [];
       }),
     };
@@ -397,17 +422,27 @@ export async function readPlaybookData() {
 
 export async function readSettingsData() {
   const connection = await readWorkspaceConnection();
-  const fallback = { readable: false, profile: null as WorkspaceProfile | null };
+  const fallback = { readable: false, profile: null as WorkspaceProfile | null, preferences: { defaultMode: "analyst", responseStyle: "balanced" } as AiPreferences };
   const records = await withAuthenticatedClient(fallback, async (supabase) => {
-    const response = await supabase.from("users").select("display_name,timezone,base_currency").maybeSingle();
+    const [response, preferenceResponse] = await Promise.all([
+      supabase.from("users").select("display_name,timezone,base_currency").maybeSingle(),
+      supabase.from("audit_events").select("safe_metadata").eq("action", "ai_preferences_updated").order("created_at", { ascending: false }).limit(1).maybeSingle(),
+    ]);
     const row = firstRecord(response.data);
+    const metadata = asRecord(firstRecord(preferenceResponse.data)?.safe_metadata);
+    const defaultMode = stringValue(metadata?.defaultMode);
+    const responseStyle = stringValue(metadata?.responseStyle);
     return {
-      readable: !responseFailed(response),
+      readable: !responseFailed(response) && !responseFailed(preferenceResponse),
       profile: row ? {
         displayName: stringValue(row.display_name),
         timezone: stringValue(row.timezone),
         baseCurrency: stringValue(row.base_currency),
       } : null,
+      preferences: {
+        defaultMode: defaultMode === "scout" || defaultMode === "investigator" ? defaultMode : "analyst",
+        responseStyle: responseStyle === "concise" || responseStyle === "detailed" ? responseStyle : "balanced",
+      } as AiPreferences,
     };
   });
   return { connection, ...records };

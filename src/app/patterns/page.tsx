@@ -27,14 +27,14 @@ export default async function PatternsPage() {
         <FeatureEmptyState
           title="RIKKU could not read pattern records safely."
           description="No pattern was created or changed. Ask RIKKU to assess what the imported evidence can support."
-          actionHref="/ask?prompt=What%20patterns%20can%20be%20safely%20assessed%20from%20my%20imported%20Bitget%20activity"
+          actionHref="/ask?context=patterns"
           actionLabel="Ask RIKKU"
         />
       ) : patterns.length === 0 ? (
         <FeatureEmptyState
           title="RIKKU has not collected enough evidence to establish a reliable pattern yet."
           description="No candidate, promising, validated, weakened, or retired pattern has been stored for this workspace."
-          actionHref="/ask?prompt=Do%20you%20see%20any%20reliable%20patterns%20in%20my%20imported%20Bitget%20activity"
+          actionHref="/ask?context=patterns"
           actionLabel="Ask RIKKU to investigate"
         />
       ) : (
@@ -46,11 +46,12 @@ export default async function PatternsPage() {
                 <h3>{pattern.claim}</h3>
                 <p>Confidence: {pattern.confidence} · Supporting evidence: {pattern.supportingEvidence} · Counter-evidence: {pattern.counterEvidence}</p>
                 <p>Sample size: not recorded · Data window: {formatCoverage(pattern.firstObservedAt, pattern.lastObservedAt)}</p>
+                <AskRikkuLink href={`/ask?context=pattern:${pattern.id}`}>Investigate this pattern</AskRikkuLink>
               </div>
               <strong>{pattern.status.toUpperCase()}</strong>
             </article>)}
           </div>
-          <AskRikkuLink href="/ask?prompt=Investigate%20the%20stored%20RIKKU%20patterns%20and%20their%20counter-evidence">Ask RIKKU about these patterns</AskRikkuLink>
+          <AskRikkuLink href="/ask?context=patterns">Investigate with RIKKU</AskRikkuLink>
         </>
       )}
     </FeaturePage>

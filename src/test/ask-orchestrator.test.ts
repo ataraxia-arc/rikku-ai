@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { ASK_TOOL_BUDGETS, type AskDataSource, type AskFill, type AskMarketCandle } from "@/lib/ask/types";
-import { orchestrateAsk, planAskTools } from "@/lib/ask/orchestrator";
+import { askDataFingerprintInput, orchestrateAsk, planAskTools } from "@/lib/ask/orchestrator";
 
 const coverageStart = "2026-07-08T06:26:10.790Z";
 const coverageEnd = "2026-08-04T01:02:55.542Z";
@@ -72,18 +72,17 @@ describe("Ask RIKKU deterministic orchestration", () => {
       expect.objectContaining({ label: "Activity by symbol" }),
       expect.objectContaining({ label: "Valid native-quote notional", value: expect.stringContaining("USDT") }),
       expect.objectContaining({ label: "Most active time window" }),
-      expect.objectContaining({ label: "Matched market context" }),
     ]));
     expect(result.evidence.map((metric) => metric.value).join(" ")).not.toContain("99");
     expect(result.limitations).toContain("Completed trades cannot yet be reconstructed because opening inventory inside the imported Bitget history window is unknown.");
     expect(result.limitations.join(" ").toLowerCase()).toContain("win rate");
     expect(result.confidence.level).toBe("low");
     expect(result.sources.map((entry) => entry.label)).toEqual(expect.arrayContaining([
-      "Bitget import summary", "Bitget fills", "Bitget financial records", "Bitget daily candles",
+      "Bitget import summary", "Bitget fills", "Bitget financial records",
     ]));
     expect(result.toolRuns.map((tool) => tool.key)).toEqual(expect.arrayContaining([
       "get_import_summary", "analyze_trading_activity", "analyze_fees", "analyze_symbol_concentration",
-      "analyze_trade_timing", "analyze_market_context", "analyze_market_regime", "retrieve_memories", "run_skeptic_check",
+      "analyze_trade_timing", "run_skeptic_check",
     ]));
     expect(result.toolRuns).toHaveLength(ASK_TOOL_BUDGETS.analyst);
   });
@@ -114,6 +113,49 @@ describe("Ask RIKKU deterministic orchestration", () => {
     });
     expect(result.toolRuns.map((tool) => tool.key)).toContain("analyze_fees");
     expect(result.sources.map((entry) => entry.label)).toContain("Bitget financial records");
+  });
+
+  it("uses question-sensitive plans for patterns, risk, and simple factual prompts", () => {
+    expect(planAskTools("Do you see any reliable behavioral patterns?", "analyst")).toEqual([
+      "get_import_summary", "analyze_trading_activity", "retrieve_memories", "retrieve_patterns", "run_skeptic_check",
+    ]);
+    expect(planAskTools("Is that enough evidence to identify a behavioral pattern?", "analyst", ["What about fees?"])).toEqual([
+      "get_import_summary", "analyze_trading_activity", "retrieve_memories", "retrieve_patterns", "run_skeptic_check",
+    ]);
+    expect(planAskTools("What risks can you currently measure?", "analyst")).toEqual([
+      "get_import_summary", "analyze_trading_activity", "analyze_symbol_concentration", "analyze_fees", "analyze_tail_risk", "run_skeptic_check",
+    ]);
+    expect(planAskTools("How much did I pay in fees?", "scout")).toEqual(["get_import_summary", "analyze_fees"]);
+    expect(planAskTools("How many fills do I have?", "analyst")).toEqual(["get_import_summary"]);
+  });
+
+  it("keeps the seven-turn reasoning acceptance conversation anchored to the original analysis", () => {
+    const questions = [
+      "What do you notice about my recent trading?",
+      "Why do you think that?",
+      "Could there be another explanation?",
+      "What evidence goes against your current interpretation?",
+      "What would change your conclusion?",
+      "What would you investigate next?",
+      "What is the most interesting thing you can infer without overstating it?",
+    ];
+    const history: string[] = [];
+    for (const question of questions) {
+      const plan = planAskTools(question, "analyst", history);
+      expect(plan).toContain("analyze_trading_activity");
+      expect(plan).toContain("run_skeptic_check");
+      history.push(question);
+    }
+  });
+
+  it("answers a simple imported count directly without unrelated metrics or analysis tools", async () => {
+    const result = await orchestrateAsk({ source: source(), mode: "analyst", question: "How many fills do I have?" });
+    expect(result.answerKind).toBe("fact");
+    expect(result.finding.headline).toBe("You currently have 12 imported fills.");
+    expect(result.finding.summary).toBe("Coverage: Jul 8 – Aug 4, 2026.");
+    expect(result.evidence).toEqual([{ label: "Fills imported", value: "12" }]);
+    expect(result.toolRuns.map((tool) => tool.key)).toEqual(["get_import_summary"]);
+    expect(result.limitations).toEqual([]);
   });
 
   it("returns an honest insufficient-data result when imported fill rows are malformed", async () => {
@@ -149,5 +191,13 @@ describe("Ask RIKKU deterministic orchestration", () => {
     });
     expect(result.status).toBe("insufficient_data");
     expect(result.limitations.join(" ")).not.toContain("upstream detail");
+  });
+
+  it("invalidates deterministic evidence fingerprints when imported data changes", async () => {
+    const summary = await source().getLatestCompletedImport();
+    expect(summary).not.toBeNull();
+    const first = askDataFingerprintInput(summary!, "How much did I pay in fees?", "analyst", []);
+    const changed = askDataFingerprintInput({ ...summary!, completedAt: "2026-09-19T00:00:00.000Z", fills: summary!.fills + 1 }, "How much did I pay in fees?", "analyst", []);
+    expect(changed).not.toBe(first);
   });
 });

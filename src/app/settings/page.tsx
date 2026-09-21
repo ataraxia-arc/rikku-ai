@@ -6,11 +6,12 @@ import { Button } from "@/components/ui/button";
 import { formatCoverage, formatUtcTimestamp } from "@/lib/workspace/presentation";
 import { readSettingsData } from "@/lib/workspace/read-workspace-data";
 import { signOut } from "@/app/settings/actions";
+import { AiSettingsForm } from "@/components/ai-settings-form";
 
 export const dynamic = "force-dynamic";
 
 export default async function SettingsPage() {
-  const { connection, readable, profile } = await readSettingsData();
+  const { connection, readable, profile, preferences } = await readSettingsData();
   const connectionStatus = connection.connected ? connection.lastSyncedAt ?? connection.verifiedAt : null;
   const sourceStatus = connection.connected ? "Verified read-only Bitget connection" : "No verified Bitget connection";
 
@@ -35,10 +36,7 @@ export default async function SettingsPage() {
           <div><span>BITGET CONNECTION</span><h3>{connection.connected ? "Connected · read-only verified" : "Not connected"}</h3><p>{connection.connected ? `Last synced: ${formatUtcTimestamp(connection.lastSyncedAt)}${connection.latestImport ? ` · Coverage: ${formatCoverage(connection.latestImport.earliestRecordAt, connection.latestImport.latestRecordAt)}` : ""}` : "Connect a read-only Bitget account before importing account data."}</p></div>
           <strong>{connection.connected ? "ACTIVE" : "OFFLINE"}</strong>
         </article>
-        <article>
-          <div><span>REASONING PREFERENCE</span><h3>Chosen per Ask RIKKU conversation</h3><p>No workspace-wide reasoning preference is stored yet. Select Scout, Analyst, or Investigator when you ask a question.</p></div>
-          <Link className="data-window" href="/ask">Open Ask RIKKU</Link>
-        </article>
+        <AiSettingsForm initial={preferences} />
         <article>
           <div><span>PRIVACY &amp; DATA</span><h3>Read-only Bitget data</h3><p>RIKKU stores the verified connection securely and uses imported records for analysis. No exchange password is collected.</p></div>
           <strong>READ-ONLY</strong>

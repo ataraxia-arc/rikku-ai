@@ -63,7 +63,7 @@ describe("RIKKU authenticated home", () => {
 
     expect(screen.getByLabelText("Latest validated RIKKU finding").textContent).toContain("LOW");
     expect(screen.getByText("Imported Bitget activity is available for descriptive analysis.")).toBeDefined();
-    expect(screen.getByRole("link", { name: /Ask RIKKU about this analysis/i }).getAttribute("href")).toContain("/ask?prompt=");
+    expect(screen.getByRole("link", { name: /Ask RIKKU about this analysis/i }).getAttribute("href")).toBe("/ask?context=latest-analysis");
   });
 
   it("uses an explicit unavailable state instead of pretending that a failed workspace read is an empty account", () => {

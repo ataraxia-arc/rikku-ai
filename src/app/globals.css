@@ -226,6 +226,10 @@ a { color: inherit; text-decoration: none; }
 .ask-composer textarea { width: 100%; resize: none; padding: 3px 5px 10px; border: 0; outline: 0; background: transparent; color: #dce5e8; font: 400 14px/1.5 var(--font-sans); }
 .ask-composer textarea::placeholder { color: #5f6d74; }
 .composer-controls { display: flex; align-items: center; gap: 8px; }
+.composer-controls input, .composer-controls select, .analysis-response label input, .analysis-response label textarea, .analysis-response label select, .insight-table label select { border: 1px solid rgba(141,155,165,.24); border-radius: 8px; background: rgba(6,10,13,.72); color: #dce5e8; padding: 9px 10px; font: inherit; }
+.analysis-response label { display: grid; gap: 6px; color: #aebbc1; font-size: 12px; }
+.analysis-response label textarea { min-height: 76px; resize: vertical; }
+.analysis-response > label + label, .insight-table label + label { margin-top: 10px; }
 .reasoning-selector { display: flex; gap: 3px; padding: 3px; border: 1px solid var(--border); border-radius: 8px; }
 .reasoning-selector button { display: flex; align-items: center; gap: 5px; height: 29px; padding: 0 9px; border: 0; border-radius: 6px; background: transparent; color: #67777f; font-size: 10px; cursor: pointer; }
 .reasoning-selector .reasoning-active { color: #baf5f6; background: rgba(0,240,255,.08); }

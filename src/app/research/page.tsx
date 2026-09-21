@@ -37,15 +37,15 @@ export default async function ResearchPage() {
         <FeatureEmptyState
           title="RIKKU could not read research records safely."
           description="No external source or thesis link was changed. Ask RIKKU to review the market context that is available."
-          actionHref="/ask?prompt=What%20research%20and%20market%20context%20are%20available%20for%20my%20imported%20Bitget%20activity"
+          actionHref="/ask?context=research"
           actionLabel="Ask RIKKU"
         />
       ) : sources.length === 0 ? (
         <>
           <FeatureEmptyState
-            title="No external research sources are stored for this workspace."
-            description="An external research provider is not evidenced by this workspace yet. RIKKU will not fabricate sources or claim that news has been retrieved."
-            actionHref="/ask?prompt=What%20market%20context%20is%20available%20around%20my%20imported%20Bitget%20activity"
+            title="External research sources are not configured yet."
+            description="No external research record is stored for this workspace. RIKKU will not fabricate headlines, publishers, or claim that news has been retrieved."
+            actionHref="/ask?context=research"
             actionLabel="Ask RIKKU about market context"
           />
           {importSummary && <div className="source-note"><span>IMPORTED MARKET CONTEXT</span><strong>{formatRecordCount(importSummary.marketCandles)} market candles available.</strong><p>Coverage: {formatCoverage(importSummary.earliestRecordAt, importSummary.latestRecordAt)}. Candles are not a substitute for external research sources.</p></div>}
@@ -65,12 +65,13 @@ export default async function ResearchPage() {
                   <span>{source.publisher ?? "Publisher not recorded"}</span>
                   <h3>{sourceUrl ? <a href={sourceUrl} target="_blank" rel="noreferrer">{source.title}</a> : source.title}</h3>
                   <p>Published: {formatUtcTimestamp(source.publishedAt)} · Retrieved: {formatUtcTimestamp(source.retrievedAt)}{sourceUrl ? "" : " · Source URL is unavailable"}</p>
+                  <AskRikkuLink href={`/ask?context=research:${source.id}`}>Ask RIKKU about this source</AskRikkuLink>
                 </div>
                 <strong>SOURCE</strong>
               </article>;
             })}
           </div>
-          <AskRikkuLink href="/ask?prompt=Use%20my%20stored%20research%20sources%20and%20imported%20market%20context%20to%20review%20my%20activity">Ask RIKKU to connect this research</AskRikkuLink>
+          <AskRikkuLink href="/ask?context=research">Ask RIKKU about this research</AskRikkuLink>
         </>
       )}
     </FeaturePage>

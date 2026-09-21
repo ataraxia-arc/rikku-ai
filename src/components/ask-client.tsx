@@ -4,6 +4,7 @@ import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { ArrowUp, BrainCircuit, Check, Database, Search, Sparkles, Zap } from "lucide-react";
 import type { AskMode, AskResponse } from "@/lib/ask/types";
+import { planAskTools } from "@/lib/ask/orchestrator";
 
 const modes = [
   { key: "scout", label: "Scout", icon: Zap, note: "Quick focused analysis" },
@@ -17,6 +18,7 @@ type ChatMessage = {
   response?: AskResponse;
   error?: string;
   loading?: boolean;
+  plannedSteps?: string[];
 };
 
 const safeErrorCopy: Record<string, string> = {
@@ -26,6 +28,25 @@ const safeErrorCopy: Record<string, string> = {
   ASK_SENSITIVE_INPUT: "Do not enter API credentials or secrets in Ask RIKKU.",
   ASK_REQUEST_TOO_LARGE: "That question is too long. Please keep it under 500 characters.",
   ASK_INVALID_REQUEST: "Enter a short question about your imported activity.",
+  LLM_INVALID_RESPONSE: "RIKKU's reasoning provider returned an invalid answer. Your imported data remains safe. Try again shortly.",
+};
+
+const toolStepLabels: Record<string, string> = {
+  get_import_summary: "Reading Bitget activity…",
+  analyze_trading_activity: "Analyzing imported activity…",
+  analyze_fees: "Calculating known fees…",
+  analyze_symbol_concentration: "Checking symbol activity…",
+  analyze_trade_timing: "Analyzing activity timing…",
+  analyze_market_context: "Matching market context…",
+  analyze_market_regime: "Classifying market regime…",
+  retrieve_memories: "Retrieving relevant memory…",
+  retrieve_patterns: "Reviewing stored patterns…",
+  analyze_portfolio: "Reading portfolio evidence…",
+  analyze_tail_risk: "Checking measurable risk…",
+  analyze_overtrading: "Checking overtrading evidence…",
+  analyze_disposition_effect: "Checking disposition evidence…",
+  retrieve_similar_scenarios: "Retrieving similar scenarios…",
+  run_skeptic_check: "Running Skeptic validation…",
 };
 
 function displayError(code: unknown) {
@@ -48,19 +69,41 @@ function statusLabel(status: AskResponse["status"]) {
 function AnswerCard({ response }: { response: AskResponse }) {
   const connectHref = response.status === "needs_connection" ? "/onboarding/bitget" : "/onboarding/import";
   const connectLabel = response.status === "needs_connection" ? "Connect Bitget" : "Import Bitget activity";
+  const isDirectFact = response.answerKind === "fact" && response.status === "completed";
   return (
     <article className="analysis-response">
       <div className="analysis-label">
         <span className="analysis-mark"><Sparkles size={15} /></span>
-        <div><strong>{statusLabel(response.status)}</strong><span>{modeLabel(response.mode)} mode · deterministic tools</span></div>
+        <div><strong>{statusLabel(response.status)}</strong><span>{modeLabel(response.mode)} mode · deterministic evidence{response.reasoningStatus === "external_llm" ? ` · ${response.reasoningProvider?.id === "openai" ? "OpenAI" : response.reasoningProvider?.id === "groq" ? "Groq" : "External LLM"} interpretation` : ""}</span></div>
       </div>
+
+      {response.reasoningNotice ? <div className="source-note"><span>REASONING STATUS</span><p>{response.reasoningNotice}</p></div> : null}
+
+      {!isDirectFact && response.interpretation && response.interpretation !== response.finding.summary ? (
+        <div className="analysis-finding"><span>INTERPRETATION</span><p>{response.interpretation}</p></div>
+      ) : null}
       <div className="analysis-finding">
         <span>FINDING</span>
         <h2>{response.finding.headline}</h2>
         <p>{response.finding.summary}</p>
       </div>
 
-      {response.evidence.length > 0 && (
+      {!isDirectFact && response.reasoningPoints.length > 0 ? (
+        <div className="analysis-finding">
+          <span>REASONING</span>
+          <ul>
+            {response.reasoningPoints.map((point, index) => (
+              <li key={`${point.kind}-${index}`}>
+                <strong>{point.kind.replace("_", " ").toUpperCase()}: </strong>{point.statement}
+                {point.rationale ? ` ${point.rationale}` : ""}
+                {point.test ? ` Test: ${point.test}` : ""}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {!isDirectFact && response.evidence.length > 0 && (
         <div className="analysis-columns">
           <section>
             <span>EVIDENCE</span>
@@ -78,7 +121,7 @@ function AnswerCard({ response }: { response: AskResponse }) {
         </div>
       )}
 
-      {(response.marketContext || response.dataWindow.label) && (
+      {!isDirectFact && (response.marketContext || response.dataWindow.label) && (
         <div className="analysis-columns">
           <section>
             <span>MARKET CONTEXT</span>
@@ -92,7 +135,7 @@ function AnswerCard({ response }: { response: AskResponse }) {
         </div>
       )}
 
-      {(response.limitations.length > 0 || response.sources.length > 0 || response.toolRuns.length > 0) && (
+      {!isDirectFact && (response.limitations.length > 0 || response.sources.length > 0 || response.toolRuns.length > 0) && (
         <div className="analysis-columns">
           <section>
             <span>LIMITATIONS</span>
@@ -105,7 +148,7 @@ function AnswerCard({ response }: { response: AskResponse }) {
         </div>
       )}
 
-      {response.toolRuns.length > 0 && (
+      {!isDirectFact && response.toolRuns.length > 0 && (
         <details className="historical-row">
           <summary>Tool execution</summary>
           <ul>
@@ -113,18 +156,24 @@ function AnswerCard({ response }: { response: AskResponse }) {
           </ul>
         </details>
       )}
+      {response.suggestedFollowups.length > 0 ? (
+        <div className="home-import-actions" aria-label="Suggested follow-up questions">
+          {response.suggestedFollowups.map((followup) => <button key={followup} type="button" className="landing-cta-secondary" data-followup={followup}>{followup}</button>)}
+        </div>
+      ) : null}
       {response.status === "needs_connection" || response.status === "needs_import" ? <Link className="landing-cta-primary" href={connectHref}>{connectLabel}</Link> : null}
     </article>
   );
 }
 
-export function AskClient({ initialPrompt = "" }: { initialPrompt?: string }) {
+export function AskClient({ initialPrompt = "", contextId = null, defaultMode = "analyst" }: { initialPrompt?: string; contextId?: string | null; defaultMode?: AskMode }) {
   const promptFromRoute = initialPrompt.trim().slice(0, 500);
-  const [mode, setMode] = useState<AskMode>("analyst");
+  const [mode, setMode] = useState<AskMode>(defaultMode);
   const [question, setQuestion] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const messageId = useRef(0);
   const history = useRef<string[]>([]);
+  const threadId = useRef<string>(globalThis.crypto?.randomUUID?.() ?? "00000000-0000-4000-8000-000000000001");
   const initialPromptStarted = useRef(false);
   const [isRunning, setIsRunning] = useState(false);
 
@@ -133,14 +182,15 @@ export function AskClient({ initialPrompt = "" }: { initialPrompt?: string }) {
     if (!trimmed || isRunning) return;
     const id = ++messageId.current;
     const priorQuestions = history.current.slice(-8);
+    const plannedSteps = planAskTools(trimmed, requestedMode, priorQuestions).map((key) => toolStepLabels[key] ?? "Checking evidence…");
     history.current = [...history.current, trimmed].slice(-8);
-    setMessages((previous) => [...previous, { id, question: trimmed, loading: true }]);
+    setMessages((previous) => [...previous, { id, question: trimmed, loading: true, plannedSteps }]);
     setIsRunning(true);
     try {
       const result = await fetch("/api/ask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: trimmed, mode: requestedMode, history: priorQuestions }),
+        body: JSON.stringify({ question: trimmed, mode: requestedMode, history: priorQuestions, threadId: threadId.current, contextId }),
       });
       let payload: unknown;
       try {
@@ -160,13 +210,13 @@ export function AskClient({ initialPrompt = "" }: { initialPrompt?: string }) {
     } finally {
       setIsRunning(false);
     }
-  }, [isRunning, mode]);
+  }, [contextId, isRunning, mode]);
 
   useEffect(() => {
     if (!promptFromRoute || initialPromptStarted.current) return;
     initialPromptStarted.current = true;
-    void ask(promptFromRoute, "analyst");
-  }, [ask, promptFromRoute]);
+    void ask(promptFromRoute, defaultMode);
+  }, [ask, defaultMode, promptFromRoute]);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -191,14 +241,16 @@ export function AskClient({ initialPrompt = "" }: { initialPrompt?: string }) {
                 <div className="analysis-label"><span className="analysis-mark"><Sparkles size={15} /></span><div><strong>READING REAL DATA</strong><span>{modeLabel(mode)} tool plan in progress</span></div></div>
                 <div className="analysis-finding"><span>ANALYSIS PROGRESS</span><h2>Preparing an evidence-backed answer.</h2><p>RIKKU is running its mode-specific deterministic tool plan against only the imported records required by this question.</p></div>
                 <ul className="analysis-progress" aria-label="Analysis steps">
-                  <li>Reading imported activity</li>
-                  <li>Running mode-specific evidence checks</li>
-                  <li>Validating evidence and limitations</li>
-                  <li>Preparing the answer</li>
+                  {message.plannedSteps?.map((step) => <li key={step}>{step}</li>)}
+                  <li>Preparing the answer…</li>
                 </ul>
               </article>
             ) : null}
-            {message.response ? <AnswerCard response={message.response} /> : null}
+            {message.response ? <div onClick={(event) => {
+              const target = event.target as HTMLElement;
+              const followup = target.closest<HTMLElement>("[data-followup]")?.dataset.followup;
+              if (followup) void ask(followup, mode);
+            }}><AnswerCard response={message.response} /></div> : null}
             {message.error ? <article className="analysis-response" role="alert"><div className="analysis-finding"><span>ASK RIKKU</span><h2>Analysis could not start.</h2><p>{message.error}</p></div></article> : null}
           </div>
         )) : (

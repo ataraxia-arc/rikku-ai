@@ -1,4 +1,4 @@
-export const ASK_ANALYSIS_VERSION = "ask-deterministic-v1";
+export const ASK_ANALYSIS_VERSION = "ask-evidence-v3";
 
 export const askModes = ["scout", "analyst", "investigator"] as const;
 export type AskMode = (typeof askModes)[number];
@@ -6,7 +6,7 @@ export type AskMode = (typeof askModes)[number];
 /** These are execution budgets, not merely presentation labels. */
 export const ASK_TOOL_BUDGETS: Record<AskMode, number> = {
   scout: 2,
-  analyst: 9,
+  analyst: 6,
   investigator: 12,
 };
 
@@ -58,8 +58,45 @@ export type AskDataWindow = {
 };
 
 export type AskConfidence = {
-  level: "low" | "moderate" | "not_assessable";
+  level: "low" | "moderate" | "high" | "not_assessable";
   reasons: string[];
+};
+
+export type AskReasoningStatus = "external_llm" | "deterministic_fallback";
+
+export type AskReasoningProvider = {
+  id: "openai" | "openai_compatible" | "groq";
+  model: string;
+};
+
+export const askAnswerKinds = ["fact", "analysis", "investigation"] as const;
+export type AskAnswerKind = (typeof askAnswerKinds)[number];
+
+export const askReasoningPointKinds = [
+  "observation",
+  "hypothesis",
+  "alternative",
+  "counter_evidence",
+  "uncertainty",
+  "next_investigation",
+] as const;
+export type AskReasoningPointKind = (typeof askReasoningPointKinds)[number];
+
+export type AskReasoningPoint = {
+  kind: AskReasoningPointKind;
+  statement: string;
+  rationale: string;
+  evidenceLabels: string[];
+  test: string | null;
+};
+
+export type AskQualitativeEvidence = {
+  kind: "memory" | "pattern";
+  label: string;
+  statement: string;
+  classification: string | null;
+  confidence: string | null;
+  status: string | null;
 };
 
 export type AskMarketContext = {
@@ -79,18 +116,26 @@ export type AskResponse = {
   version: typeof ASK_ANALYSIS_VERSION;
   status: AskResponseStatus;
   mode: AskMode;
+  answerKind: AskAnswerKind;
   question: string;
   finding: {
     headline: string;
     summary: string;
   };
+  interpretation: string;
+  reasoningPoints: AskReasoningPoint[];
   evidence: AskMetric[];
+  qualitativeEvidence: AskQualitativeEvidence[];
   confidence: AskConfidence;
   limitations: string[];
   marketContext: AskMarketContext | null;
   dataWindow: AskDataWindow;
   sources: AskSource[];
   toolRuns: AskToolRun[];
+  suggestedFollowups: string[];
+  reasoningStatus: AskReasoningStatus;
+  reasoningProvider?: AskReasoningProvider;
+  reasoningNotice?: string;
 };
 
 export type AskConnectionStatus = {

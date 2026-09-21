@@ -12,6 +12,8 @@ Current implementation includes:
 - A navigable Bitget onboarding flow with an advanced, read-only main-account API connection
 - PostgreSQL schema with row-level security, private credential storage, and Bitget import infrastructure
 - Server-side read-only Bitget import routes, normalizers, trade reconstruction, and import-status UI
+- Server-side OpenAI Responses API interpretation over authoritative deterministic evidence, with strict structured output and bounded mode-specific models
+- Per-user Ask threads, evidence-linked memory, functional Playbook rules, and AI preferences
 - Unit, security, type, lint, and production-build validation
 
 No sample account balances, trades, or findings are shown as real data. No exchange credentials or real trading information are included in this repository.
@@ -32,7 +34,7 @@ Bitget Agentic OAuth is not used for this web onboarding: its official flow auth
 
 ## Local setup
 
-1. Copy `.env.example` to `.env.local` and add the Supabase values.
+1. Copy `.env.example` to `.env.local` and add the Supabase values plus either the server-only `OPENAI_API_KEY`, or all three OpenAI-compatible provider values: `LLM_API_KEY`, `LLM_BASE_URL`, and `LLM_MODEL`.
 2. Install dependencies with `pnpm install`.
 3. Start the app with `pnpm dev`.
 4. Open `http://localhost:3000`.
@@ -47,7 +49,7 @@ pnpm run lint
 pnpm run build
 ```
 
-Database migrations are in `supabase/migrations/`, including the initial schema, connection RPCs, and import infrastructure. The first real-data import has not run; it requires a server-only Supabase key. Do not commit that key or other credentials.
+Database migrations are in `supabase/migrations/`, including the initial schema, connection RPCs, and import infrastructure. Server-only Supabase and OpenAI keys must remain in local/deployment environment storage. Do not commit those keys or other credentials.
 
 ## Security posture
 

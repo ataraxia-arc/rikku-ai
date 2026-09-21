@@ -28,14 +28,14 @@ export default async function MemoryPage() {
         <FeatureEmptyState
           title="RIKKU could not read saved memories safely."
           description="No memory was changed. Ask RIKKU to review the current evidence once the workspace is available."
-          actionHref="/ask?prompt=What%20does%20RIKKU%20currently%20remember%20about%20my%20trading%20activity"
+          actionHref="/ask?context=memory"
           actionLabel="Ask RIKKU"
         />
       ) : memories.length === 0 ? (
         <FeatureEmptyState
           title="No evidence-linked memories exist yet."
           description="Imported activity can support factual memories, but RIKKU will not create behavioral or performance claims until the required evidence exists."
-          actionHref="/ask?prompt=What%20facts%20can%20RIKKU%20safely%20remember%20from%20my%20imported%20Bitget%20activity"
+          actionHref="/ask?context=memory"
           actionLabel="Ask RIKKU about available memory"
         />
       ) : <MemoryExplorer memories={memories} />}

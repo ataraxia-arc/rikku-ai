@@ -10,6 +10,9 @@ const connectionMigration = readFileSync(
   resolve("supabase/migrations/202609150002_bitget_connection_rpcs.sql"),
   "utf8",
 ).toLowerCase();
+const askRoute = readFileSync(resolve("src/app/api/ask/route.ts"), "utf8");
+const openAiReasoner = readFileSync(resolve("src/lib/ask/openai-reasoner.ts"), "utf8");
+const reasoningProvider = readFileSync(resolve("src/lib/ask/reasoning-provider.ts"), "utf8");
 
 describe("initial database migration security", () => {
   it("keeps exchange credentials outside the public schema", () => {
@@ -48,5 +51,18 @@ describe("initial database migration security", () => {
     expect(connectionMigration).toContain(
       "revoke all on function public.upsert_bitget_connection",
     );
+  });
+
+  it("keeps conversation retrieval user-scoped and reasoning credentials server-only", () => {
+    expect(askRoute).toContain('.eq("user_id", userId)');
+    expect(askRoute).toContain('.contains("evidence_map", { threadId })');
+    expect(openAiReasoner).toContain('import "server-only"');
+    expect(reasoningProvider).toContain('import "server-only"');
+    expect(reasoningProvider).toContain('value(env, "OPENAI_API_KEY")');
+    expect(reasoningProvider).toContain('value(env, "LLM_API_KEY")');
+    expect(reasoningProvider).toContain('value(env, "LLM_BASE_URL")');
+    expect(reasoningProvider).toContain('value(env, "LLM_MODEL")');
+    expect(reasoningProvider).not.toContain("NEXT_PUBLIC_OPENAI");
+    expect(reasoningProvider).not.toContain("NEXT_PUBLIC_LLM");
   });
 });

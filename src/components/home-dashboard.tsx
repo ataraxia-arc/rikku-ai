@@ -72,7 +72,13 @@ export function HomeDashboard({
             <Link className="landing-cta-primary" href="/ask?prompt=Analyze%20my%20imported%20Bitget%20activity">Analyze my activity <ArrowRight size={15} /></Link>
             <StartBitgetImportButton label="Resync Bitget" />
           </div>
-          {latestFinding && <div className="source-note" aria-label="Latest validated RIKKU finding"><span>LATEST VALIDATED ANALYSIS{latestFinding.confidence ? ` · ${latestFinding.confidence.toUpperCase()}` : ""}</span><strong>{latestFinding.headline}</strong><p>{latestFinding.summary}</p><Link className="data-window" href="/ask?prompt=Review%20my%20latest%20validated%20RIKKU%20analysis">Ask RIKKU about this analysis</Link></div>}
+          <nav className="insight-table" aria-label="Suggested Ask RIKKU prompts">
+            <Link href="/ask?prompt=Analyze%20my%20imported%20Bitget%20activity">Analyze my imported Bitget activity</Link>
+            <Link href="/ask?prompt=Break%20down%20my%20known%20fees">Break down my known fees</Link>
+            <Link href="/ask?prompt=Show%20my%20most%20active%20symbols">Show my most active symbols</Link>
+            <Link href="/ask?prompt=Explain%20what%20RIKKU%20cannot%20determine%20yet">Explain what RIKKU cannot determine yet</Link>
+          </nav>
+          {latestFinding && <div className="source-note" aria-label="Latest validated RIKKU finding"><span>LATEST VALIDATED ANALYSIS{latestFinding.confidence ? ` · ${latestFinding.confidence.toUpperCase()}` : ""}</span><strong>{latestFinding.headline}</strong><p>{latestFinding.summary}</p><Link className="data-window" href="/ask?context=latest-analysis">Ask RIKKU about this analysis</Link></div>}
           <p className="coverage-note">Assets and positions may be empty when Bitget returned none for this read-only sync.</p>
         </section>
       ) : workspaceUnavailable ? (

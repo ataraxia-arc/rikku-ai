@@ -26,18 +26,27 @@ const filters = [
   { label: "Theses", types: ["thesis"] },
 ] as const;
 
-function askHref(statement: string) {
-  return `/ask?${new URLSearchParams({ prompt: `Use this RIKKU memory as context: ${statement.slice(0, 350)}` })}`;
+function askHref(id: string) {
+  return `/ask?${new URLSearchParams({ context: `memory:${id}` })}`;
 }
 
 export function MemoryExplorer({ memories }: { memories: MemoryExplorerRecord[] }) {
   const [selectedFilter, setSelectedFilter] = useState("All");
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<"newest" | "oldest" | "confidence">("newest");
+  const [openMemory, setOpenMemory] = useState<string | null>(null);
   const activeFilter = filters.find((filter) => filter.label === selectedFilter) ?? filters[0];
   const selectedTypes = activeFilter.types as readonly MemoryExplorerRecord["type"][] | null;
-  const visibleMemories = useMemo(
-    () => selectedTypes === null ? memories : memories.filter((memory) => selectedTypes.includes(memory.type)),
-    [memories, selectedTypes],
-  );
+  const visibleMemories = useMemo(() => {
+    const ranks: Record<string, number> = { very_high: 4, high: 3, moderate: 2, low: 1, not_assessable: 0 };
+    const filtered = memories.filter((memory) => (selectedTypes === null || selectedTypes.includes(memory.type))
+      && (!query.trim() || `${memory.statement} ${memory.classification} ${memory.type}`.toLowerCase().includes(query.trim().toLowerCase())));
+    return [...filtered].sort((a, b) => sort === "confidence"
+      ? (ranks[b.confidence] ?? 0) - (ranks[a.confidence] ?? 0)
+      : sort === "oldest"
+        ? Date.parse(a.createdAt ?? "") - Date.parse(b.createdAt ?? "")
+        : Date.parse(b.createdAt ?? "") - Date.parse(a.createdAt ?? ""));
+  }, [memories, query, selectedTypes, sort]);
   const hasBehavioralMemory = memories.some((memory) => memory.type === "behavioral");
 
   return (
@@ -45,6 +54,10 @@ export function MemoryExplorer({ memories }: { memories: MemoryExplorerRecord[] 
       <p className="section-kicker">EVIDENCE-LINKED MEMORY</p>
       <h2 id="memory-explorer-title">Memory explorer</h2>
       <p>Each memory is displayed with its stored confidence, status, date, and any recorded evidence source.</p>
+      <div className="composer-controls" aria-label="Search and sort memories">
+        <label><span className="sr-only">Search memories</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search memories" /></label>
+        <label><span className="sr-only">Sort memories</span><select value={sort} onChange={(event) => setSort(event.target.value as typeof sort)}><option value="newest">Newest</option><option value="oldest">Oldest</option><option value="confidence">Confidence</option></select></label>
+      </div>
       <div className="home-import-actions" role="group" aria-label="Filter memories">
         {filters.map((filter) => <button
           key={filter.label}
@@ -66,9 +79,10 @@ export function MemoryExplorer({ memories }: { memories: MemoryExplorerRecord[] 
             <div>
               <span>{memory.type.replace("_", " ")} · {memory.classification} · {memory.status}</span>
               <h3>{memory.statement}</h3>
-              <p>Confidence: {memory.confidence} · Source: {source} · Evidence date: {formatUtcDate(evidenceDate)}</p>
-              {memory.evidence.length > 1 && <p>{memory.evidence.length} linked evidence records · first direction: {firstEvidence?.direction}</p>}
-              <Link className="data-window" href={askHref(memory.statement)}>Ask RIKKU using this memory <ArrowRight size={12} /></Link>
+              <p>Confidence: {memory.confidence} · Evidence: {memory.evidence.length} · Created: {formatUtcDate(memory.createdAt)}</p>
+              {openMemory === memory.id ? <p>Source: {source} · Evidence date: {formatUtcDate(evidenceDate)}{memory.evidence.length > 1 ? ` · ${memory.evidence.length} linked evidence records` : ""}</p> : null}
+              <button type="button" className="data-window" aria-expanded={openMemory === memory.id} onClick={() => setOpenMemory(openMemory === memory.id ? null : memory.id)}>{openMemory === memory.id ? "Close memory" : "Open memory"}</button>
+              <Link className="data-window" href={askHref(memory.id)}>Ask RIKKU using this memory <ArrowRight size={12} /></Link>
             </div>
             <strong>{memory.confidence.toUpperCase()}</strong>
           </article>;

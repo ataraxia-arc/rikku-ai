@@ -3,18 +3,24 @@ import { containsSensitiveAskInput, PERSISTED_ASK_QUESTION, scrubAskResponseForP
 import type { AskResponse } from "@/lib/ask/types";
 
 const response: AskResponse = {
-  version: "ask-deterministic-v1",
+  version: "ask-evidence-v3",
   status: "completed",
   mode: "analyst",
+  answerKind: "analysis",
   question: "Analyze my imported Bitget activity.",
   finding: { headline: "Imported data is available.", summary: "A safe test response." },
+  interpretation: "A safe test response.",
+  reasoningPoints: [],
   evidence: [],
+  qualitativeEvidence: [],
   confidence: { level: "low", reasons: [] },
   limitations: [],
   marketContext: null,
   dataWindow: { start: null, end: null, label: null },
   sources: [],
   toolRuns: [],
+  suggestedFollowups: [],
+  reasoningStatus: "deterministic_fallback",
 };
 
 describe("Ask input safety", () => {

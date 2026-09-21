@@ -1,6 +1,6 @@
 import type { AskResponse } from "@/lib/ask/types";
 
-/** Durable records deliberately omit free-form questions. */
+/** Persisted response blobs omit the duplicate free-form question. */
 export const PERSISTED_ASK_QUESTION = "Ask RIKKU question (content omitted from durable storage)";
 
 const credentialPatterns = [
@@ -20,7 +20,7 @@ export function containsSensitiveAskInput(value: string) {
   return credentialPatterns.some((pattern) => pattern.test(value));
 }
 
-/** Keep the response cache useful without retaining a user's free-form text. */
+/** Keep generated response blobs free of duplicated user input. */
 export function scrubAskResponseForPersistence(response: AskResponse): AskResponse {
   return { ...response, question: PERSISTED_ASK_QUESTION };
 }

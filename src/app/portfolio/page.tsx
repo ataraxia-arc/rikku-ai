@@ -33,14 +33,14 @@ export default async function PortfolioPage() {
         <FeatureEmptyState
           title="RIKKU could not read portfolio data safely."
           description="The connection was not changed. Try again from Ask RIKKU after confirming the imported data is available."
-          actionHref="/ask?prompt=Review%20my%20Bitget%20portfolio%20data%20availability"
+          actionHref="/ask?context=portfolio"
           actionLabel="Ask RIKKU"
         />
       ) : assets.length === 0 && positions.length === 0 ? (
         <FeatureEmptyState
           title="No current assets were returned by the connected Bitget account."
-          description="No current positions were returned either. RIKKU will not fabricate allocation, exposure, or risk values from an empty account response."
-          actionHref="/ask?prompt=Explain%20what%20Bitget%20portfolio%20data%20is%20available%20for%20my%20account"
+          description={`No current positions were returned either. Historical import evidence still includes ${connection.latestImport?.instruments ?? 0} observed instruments. RIKKU will not fabricate allocation, exposure, or account value.`}
+          actionHref="/ask?context=portfolio"
           actionLabel="Ask RIKKU about available data"
         />
       ) : (
@@ -65,7 +65,7 @@ export default async function PortfolioPage() {
             </article>)}
           </section>}
           <div className="source-note"><span>NO SYNTHETIC PORTFOLIO METRICS</span><strong>Allocation and risk contribution remain unavailable.</strong><p>RIKKU needs a complete, valuated asset and position set before calculating them.</p></div>
-          <AskRikkuLink href="/ask?prompt=Analyze%20my%20available%20Bitget%20portfolio%20data%20without%20estimating%20missing%20values">Analyze this portfolio data</AskRikkuLink>
+          <AskRikkuLink href="/ask?context=portfolio">Ask RIKKU about my portfolio</AskRikkuLink>
         </>
       )}
     </FeaturePage>

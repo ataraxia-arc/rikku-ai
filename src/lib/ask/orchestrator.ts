@@ -3,6 +3,7 @@ import {
   ASK_TOOL_BUDGETS,
   AskDataAccessError,
   type AskConfidence,
+  type AskAnswerKind,
   type AskDataSource,
   type AskDataWindow,
   type AskFill,
@@ -32,6 +33,8 @@ type Intent = {
   risk: boolean;
   limitations: boolean;
   deep: boolean;
+  fact: "orders" | "fills" | "financial_records" | "instruments" | "candles" | "completed_trades" | null;
+  followUp: "why" | "alternatives" | "counter_evidence" | "change_conclusion" | "next_investigation" | "bounded_inference" | null;
 };
 
 type ParsedFill = {
@@ -138,12 +141,34 @@ function normalizeQuestion(value: string) {
   return value.trim().replace(/\s+/g, " ").slice(0, 500);
 }
 
+function followUpFocus(value: string): Intent["followUp"] {
+  if (/\b(why|reason(?:ing)?)\b/.test(value)) return "why";
+  if (/\b(another explanation|alternative explanation|something else|could it be)\b/.test(value)) return "alternatives";
+  if (/\b(evidence .*against|counter[- ]?evidence|weakens?|contradict)\b/.test(value)) return "counter_evidence";
+  if (/\b(change (?:your|the) conclusion|change your mind|strengthen|weaken)\b/.test(value)) return "change_conclusion";
+  if (/\b(investigat(?:e|ion) next|look at next|check next)\b/.test(value)) return "next_investigation";
+  if (/\b(most interesting|without overstating|infer)\b/.test(value)) return "bounded_inference";
+  return null;
+}
+
 function classify(question: string, history: string[]): Intent {
   const lower = question.toLowerCase();
-  const contextual = /\b(it|that|those|them|same|more|again)\b/.test(lower)
-    ? `${lower} ${(history.at(-1) ?? "").toLowerCase()}`
+  const followUp = followUpFocus(lower);
+  const explicitSubject = /\b(orders?|fills?|financial records?|fees?|cost|commission|symbols?|instruments?|timing|market|regime|candles?|memory|memories|patterns?|portfolio|assets?|balances?|positions?|risks?|drawdown|pnl|return|win rate|completed trades?|missing|insufficient)\b/.test(lower);
+  const contextualReference = /\b(it|that|those|them|same|more|again|conclusion|interpretation|explanation|idea)\b/.test(lower);
+  const anchor = [...history].reverse().find((item) => !followUpFocus(item.toLowerCase())) ?? history.at(-1) ?? "";
+  const contextual = !explicitSubject && (followUp !== null || contextualReference)
+    ? `${lower} ${anchor.toLowerCase()}`
     : lower;
-  const activity = /\b(analy[sz]e|activity|traded|trade most|latest activity|what .*know|behavior|strongest evidence|patterns?)\b/.test(contextual);
+  const countQuestion = /\b(how many|count|number of)\b/.test(lower);
+  const fact = countQuestion && /\borders?\b/.test(lower) ? "orders"
+    : countQuestion && /\bfills?\b/.test(lower) ? "fills"
+      : countQuestion && /\bfinancial records?\b/.test(lower) ? "financial_records"
+        : countQuestion && /\b(instruments?|symbols?)\b/.test(lower) ? "instruments"
+          : countQuestion && /\bcandles?\b/.test(lower) ? "candles"
+            : countQuestion && /\bcompleted trades?\b/.test(lower) ? "completed_trades"
+              : null;
+  const activity = /\b(analy[sz]e|activity|traded|trade most|latest activity|what .*know|what .*notice|behavior|strongest evidence|patterns?)\b/.test(contextual);
   return {
     activity,
     fees: /\b(fee|fees|cost|commission)\b/.test(contextual),
@@ -151,12 +176,20 @@ function classify(question: string, history: string[]): Intent {
     timing: /\b(when|time of day|hour|timing|often)\b/.test(contextual),
     market: /\b(market|volatil|regime|candle|condition)\b/.test(contextual),
     memory: /\b(remember|memory|memories)\b/.test(contextual),
-    patterns: /\b(pattern|recurring)\b/.test(contextual),
+    patterns: /\b(patterns?|recurring)\b/.test(contextual),
     portfolio: /\b(portfolio|asset|balance|position|exposure)\b/.test(contextual),
-    risk: /\b(risk|tail|var|cvar|drawdown|overtrad|disposition|profit|pnl|return|win rate)\b/.test(contextual),
+    risk: /\b(risks?|tail|var|cvar|drawdown|overtrad|disposition|profit|pnl|return|win rate)\b/.test(contextual),
     limitations: /\b(cannot|can.t|not determine|missing|why can.t|why cant|insufficient)\b/.test(contextual),
     deep: /\b(investigat|deep|all|comprehensive)\b/.test(contextual),
+    fact,
+    followUp,
   };
+}
+
+function answerKindFor(mode: AskMode, intent: Intent): AskAnswerKind {
+  if (intent.fact) return "fact";
+  if (mode === "investigator" || intent.deep) return "investigation";
+  return "analysis";
 }
 
 function toolPlan(mode: AskMode, intent: Intent): AskToolKey[] {
@@ -171,12 +204,14 @@ function toolPlan(mode: AskMode, intent: Intent): AskToolKey[] {
           : intent.memory ? "retrieve_memories"
             : "analyze_trading_activity";
 
+  if (intent.fact) return tools;
+
   if (mode === "scout") {
     add(focused);
     return tools;
   }
 
-  const broadActivity = intent.activity || intent.deep || (!intent.fees && !intent.symbols && !intent.timing && !intent.market && !intent.memory && !intent.portfolio && !intent.risk && !intent.limitations);
+  const broadActivity = (intent.activity && !intent.patterns) || intent.deep || (!intent.fees && !intent.symbols && !intent.timing && !intent.market && !intent.memory && !intent.patterns && !intent.portfolio && !intent.risk && !intent.limitations);
   if (broadActivity) {
     add("analyze_trading_activity");
     add("analyze_fees");
@@ -185,13 +220,24 @@ function toolPlan(mode: AskMode, intent: Intent): AskToolKey[] {
     add("analyze_market_context");
     add("analyze_market_regime");
     add("retrieve_memories");
+    if (intent.patterns) {
+      add("retrieve_memories");
+      add("retrieve_patterns");
+    }
   } else {
     add(focused);
     if (intent.market) add("analyze_market_regime");
     if (intent.memory) add("retrieve_memories");
-    if (intent.patterns) add("retrieve_patterns");
+    if (intent.patterns) {
+      add("retrieve_memories");
+      add("retrieve_patterns");
+    }
     if (intent.portfolio) add("analyze_portfolio");
-    if (intent.risk) add("analyze_tail_risk");
+    if (intent.risk) {
+      add("analyze_symbol_concentration");
+      add("analyze_fees");
+      add("analyze_tail_risk");
+    }
   }
 
   if (mode === "investigator") {
@@ -209,8 +255,9 @@ function toolPlan(mode: AskMode, intent: Intent): AskToolKey[] {
       add("retrieve_similar_scenarios");
     }
   }
-  if (!intent.limitations) add("run_skeptic_check");
-  return tools.slice(0, ASK_TOOL_BUDGETS[mode]);
+  const budget = ASK_TOOL_BUDGETS[mode];
+  const bounded = tools.filter((key) => key !== "run_skeptic_check").slice(0, Math.max(1, budget - 1));
+  return [...bounded, "run_skeptic_check"];
 }
 
 function parseFills(rows: AskFill[]): ParsedFill[] {
@@ -377,29 +424,76 @@ function confidenceFor(summary: AskImportSummary, activity: Activity | null, mar
   return { level: "moderate", reasons };
 }
 
-function importMetrics(summary: AskImportSummary, metrics: AskMetric[]) {
-  addMetric(metrics, "Orders imported", String(summary.orders));
-  addMetric(metrics, "Fills imported", String(summary.fills));
-  addMetric(metrics, "Financial records", String(summary.financialRecords), "Reported separately from fill fees to avoid double-counting.");
-  addMetric(metrics, "Instruments observed", String(summary.instruments));
-  addMetric(metrics, "Market candles", String(summary.marketCandles));
-  addMetric(metrics, "Completed trades", summary.completedTrades ? String(summary.completedTrades) : "Not yet reconstructable");
+function importMetrics(summary: AskImportSummary, metrics: AskMetric[], intent: Intent) {
+  const add = (key: NonNullable<Intent["fact"]>) => {
+    if (key === "orders") addMetric(metrics, "Orders imported", String(summary.orders));
+    if (key === "fills") addMetric(metrics, "Fills imported", String(summary.fills));
+    if (key === "financial_records") addMetric(metrics, "Financial records", String(summary.financialRecords), "Reported separately from fill fees to avoid double-counting.");
+    if (key === "instruments") addMetric(metrics, "Instruments observed", String(summary.instruments));
+    if (key === "candles") addMetric(metrics, "Market candles", String(summary.marketCandles));
+    if (key === "completed_trades") addMetric(metrics, "Completed trades", summary.completedTrades ? String(summary.completedTrades) : "Not yet reconstructable");
+  };
+  if (intent.fact) {
+    add(intent.fact);
+    return;
+  }
+  if (intent.fees) {
+    add("fills");
+    add("financial_records");
+    return;
+  }
+  if (intent.symbols) {
+    add("fills");
+    add("instruments");
+    return;
+  }
+  if (intent.timing) {
+    add("fills");
+    return;
+  }
+  if (intent.market) {
+    add("fills");
+    add("candles");
+    return;
+  }
+  if (intent.portfolio) {
+    addMetric(metrics, "Assets imported", String(summary.assets));
+    addMetric(metrics, "Positions imported", String(summary.positions));
+    return;
+  }
+  if (intent.risk || intent.patterns || intent.memory || intent.limitations) {
+    add("fills");
+    add("completed_trades");
+    return;
+  }
+  add("orders");
+  add("fills");
+  add("financial_records");
+  add("instruments");
+  add("candles");
+  add("completed_trades");
 }
 
-function baseResponse(question: string, mode: AskMode, status: AskResponse["status"], finding: AskResponse["finding"]): AskResponse {
+function baseResponse(question: string, mode: AskMode, answerKind: AskAnswerKind, status: AskResponse["status"], finding: AskResponse["finding"]): AskResponse {
   return {
     version: ASK_ANALYSIS_VERSION,
     status,
     mode,
+    answerKind,
     question,
     finding,
+    interpretation: finding.summary,
+    reasoningPoints: [],
     evidence: [],
+    qualitativeEvidence: [],
     confidence: { level: "not_assessable", reasons: [] },
     limitations: [],
     marketContext: null,
     dataWindow: { start: null, end: null, label: null },
     sources: [],
     toolRuns: [],
+    suggestedFollowups: [],
+    reasoningStatus: "deterministic_fallback",
   };
 }
 
@@ -408,17 +502,104 @@ function dataUnavailable(response: AskResponse, key: AskToolKey) {
   addUnique(response.limitations, "A required imported dataset was unavailable, so RIKKU did not substitute a value.", (value) => value);
 }
 
+function metricValue(response: AskResponse, label: string) {
+  return response.evidence.find((metric) => metric.label === label)?.value ?? null;
+}
+
+function applyQuestionFocusedFinding(response: AskResponse, intent: Intent) {
+  const fees = metricValue(response, "Known fill fees by coin");
+  const symbols = metricValue(response, "Activity by symbol");
+  const timing = metricValue(response, "Most active time window");
+  const memories = metricValue(response, "Relevant RIKKU memories");
+  const patterns = metricValue(response, "Stored pattern candidates");
+
+  const factValues: Record<NonNullable<Intent["fact"]>, { label: string; noun: string }> = {
+    orders: { label: "Orders imported", noun: "imported orders" },
+    fills: { label: "Fills imported", noun: "imported fills" },
+    financial_records: { label: "Financial records", noun: "imported financial records" },
+    instruments: { label: "Instruments observed", noun: "observed instruments" },
+    candles: { label: "Market candles", noun: "imported market candles" },
+    completed_trades: { label: "Completed trades", noun: "completed reconstructed trades" },
+  };
+
+  if (intent.fact) {
+    const fact = factValues[intent.fact];
+    const value = metricValue(response, fact.label) ?? "Not available";
+    response.finding = {
+      headline: `You currently have ${value} ${fact.noun}.`,
+      summary: response.dataWindow.label ? `Coverage: ${response.dataWindow.label}.` : "The completed import did not report a usable coverage window.",
+    };
+  } else if (intent.limitations) {
+    response.finding = {
+      headline: "The current import supports descriptive activity, but not completed-trade performance claims.",
+      summary: response.limitations[0] ?? "The available evidence does not support the requested conclusion yet.",
+    };
+  } else if (intent.fees && fees) {
+    response.finding = {
+      headline: `Known fill-level fees: ${fees}.`,
+      summary: "RIKKU kept fill fees separate from financial-record fees because overlap has not been proven.",
+    };
+  } else if (intent.symbols && symbols) {
+    response.finding = {
+      headline: `Imported fill activity by symbol: ${symbols}.`,
+      summary: "This is fill-frequency evidence, not proof of preference or profitability.",
+    };
+  } else if (intent.timing && timing) {
+    response.finding = {
+      headline: `Your most active observed UTC window was ${timing}.`,
+      summary: "This describes the imported window only and is not yet a stable behavioral pattern.",
+    };
+  } else if (intent.market && response.marketContext) {
+    response.finding = {
+      headline: response.marketContext.available ? "Market context was matched to imported fill activity." : "Market context could not be matched reliably.",
+      summary: response.marketContext.summary,
+    };
+  } else if (intent.memory) {
+    response.finding = memories ? {
+      headline: `${memories} evidence-linked memor${memories === "1" ? "y is" : "ies are"} currently available.`,
+      summary: "Stored memory remains separate from raw Bitget records and keeps its evidence classification visible.",
+    } : {
+      headline: "No evidence-linked RIKKU memories are available yet.",
+      summary: "RIKKU did not turn a short imported history into an unsupported behavioral memory.",
+    };
+  } else if (intent.patterns) {
+    response.finding = patterns ? {
+      headline: `${patterns} stored pattern candidates are available for review.`,
+      summary: "Stored candidates are not treated as validated behavior without sufficient supporting evidence.",
+    } : {
+      headline: "No reliable behavioral pattern is established yet.",
+      summary: "The current fill sample and unreconstructed trades are insufficient for a defensible behavioral conclusion.",
+    };
+  } else if (intent.portfolio) {
+    response.finding = {
+      headline: "Bitget returned no current assets or positions during the latest sync.",
+      summary: "RIKKU will not estimate portfolio value, allocation, or exposure from order and fill history.",
+    };
+  } else if (intent.risk) {
+    response.finding = {
+      headline: "Only limited descriptive risk evidence is available from the current import.",
+      summary: "Closed-trade drawdown, expectancy, VaR, and CVaR remain unavailable without reconstructed return history.",
+    };
+  }
+  response.interpretation = response.finding.summary;
+  response.suggestedFollowups = response.status === "completed" && response.answerKind !== "fact" ? [
+    "What information is missing?",
+    "Show me evidence against this conclusion.",
+  ] : [];
+}
+
 export async function orchestrateAsk(input: AskOrchestrationInput): Promise<AskResponse> {
   const question = normalizeQuestion(input.question);
   const history = (input.history ?? []).map(normalizeQuestion).filter(Boolean).slice(-8);
   const intent = classify(question, history);
+  const answerKind = answerKindFor(input.mode, intent);
   const context: AnalysisContext = { source: input.source };
 
   let connection;
   try {
     connection = await input.source.getConnectionStatus();
   } catch {
-    const response = baseResponse(question, input.mode, "insufficient_data", {
+    const response = baseResponse(question, input.mode, answerKind, "insufficient_data", {
       headline: "RIKKU could not safely read your connection status.",
       summary: "No analysis was generated because the authenticated data check was unavailable.",
     });
@@ -428,7 +609,7 @@ export async function orchestrateAsk(input: AskOrchestrationInput): Promise<AskR
   }
 
   if (!connection.connected) {
-    const response = baseResponse(question, input.mode, "needs_connection", {
+    const response = baseResponse(question, input.mode, answerKind, "needs_connection", {
       headline: "Connect Bitget before asking for account-specific analysis.",
       summary: "RIKKU does not infer personal trading activity without an authenticated, read-only Bitget connection.",
     });
@@ -441,7 +622,7 @@ export async function orchestrateAsk(input: AskOrchestrationInput): Promise<AskR
   try {
     summary = input.initialImport === undefined ? await input.source.getLatestCompletedImport() : input.initialImport;
   } catch {
-    const response = baseResponse(question, input.mode, "insufficient_data", {
+    const response = baseResponse(question, input.mode, answerKind, "insufficient_data", {
       headline: "RIKKU could not safely read the completed import.",
       summary: "No analysis was generated because import metadata was unavailable.",
     });
@@ -451,7 +632,7 @@ export async function orchestrateAsk(input: AskOrchestrationInput): Promise<AskR
   }
 
   if (!summary) {
-    const response = baseResponse(question, input.mode, "needs_import", {
+    const response = baseResponse(question, input.mode, answerKind, "needs_import", {
       headline: "Import Bitget activity before asking this question.",
       summary: "Your connection is verified, but RIKKU has no completed Bitget import to analyze yet.",
     });
@@ -461,17 +642,25 @@ export async function orchestrateAsk(input: AskOrchestrationInput): Promise<AskR
     return response;
   }
 
-  const response = baseResponse(question, input.mode, "completed", {
+  const response = baseResponse(question, input.mode, answerKind, "completed", {
     headline: "Imported Bitget activity is available for descriptive analysis.",
     summary: "RIKKU calculated only metrics supported by the current import and did not infer profitability or behavior from unreconstructed trades.",
   });
   const metrics = response.evidence;
   response.dataWindow = formatWindow(summary.earliestRecordAt, summary.latestRecordAt);
-  importMetrics(summary, metrics);
+  importMetrics(summary, metrics, intent);
   addSource(response.sources, "Bitget import summary", response.dataWindow.label ? `Coverage: ${response.dataWindow.label}` : undefined);
-  response.toolRuns.push(resultTool("get_import_summary", "completed", `${summary.orders} orders, ${summary.fills} fills, and ${summary.financialRecords} financial records are available.`, ["Bitget import summary"], summary.fills));
+  const summaryMetric = intent.fact ? metrics[0] : null;
+  response.toolRuns.push(resultTool(
+    "get_import_summary",
+    "completed",
+    summaryMetric ? `${summaryMetric.label}: ${summaryMetric.value}.` : "The latest completed import summary is available.",
+    ["Bitget import summary"],
+    summary.fills,
+  ));
 
-  if (summary.completedTrades === 0) {
+  const needsTradeReconstruction = intent.activity || intent.patterns || intent.risk || intent.limitations || intent.deep || intent.followUp !== null;
+  if (summary.completedTrades === 0 && needsTradeReconstruction) {
     response.limitations.push("Completed trades cannot yet be reconstructed because opening inventory inside the imported Bitget history window is unknown.");
     response.limitations.push("Win rate, realized trade return, tail risk by trade, disposition effect, R multiple, and trade expectancy are not available.");
   }
@@ -662,6 +851,18 @@ export async function orchestrateAsk(input: AskOrchestrationInput): Promise<AskR
         }
         addSource(response.sources, "RIKKU memory");
         const factual = memories.filter((memory) => memory.classification === "fact").length;
+        for (const [index, memory] of memories.entries()) {
+          const statement = memory.statement?.trim().slice(0, 500);
+          if (!statement) continue;
+          response.qualitativeEvidence.push({
+            kind: "memory",
+            label: `RIKKU memory ${index + 1}`,
+            statement,
+            classification: memory.classification,
+            confidence: memory.confidence,
+            status: memory.status,
+          });
+        }
         addMetric(metrics, "Relevant RIKKU memories", String(memories.length), `${factual} factual; memories are shown separately from imported source records.`);
         response.toolRuns.push(resultTool(key, "completed", `${memories.length} relevant RIKKU memor${memories.length === 1 ? "y" : "ies"} were retrieved.`, ["RIKKU memory"], memories.length));
         continue;
@@ -674,6 +875,18 @@ export async function orchestrateAsk(input: AskOrchestrationInput): Promise<AskR
           continue;
         }
         addSource(response.sources, "RIKKU patterns");
+        for (const [index, pattern] of patterns.entries()) {
+          const statement = pattern.claim?.trim().slice(0, 500);
+          if (!statement) continue;
+          response.qualitativeEvidence.push({
+            kind: "pattern",
+            label: `RIKKU pattern ${index + 1}`,
+            statement,
+            classification: null,
+            confidence: pattern.confidence,
+            status: pattern.status,
+          });
+        }
         addMetric(metrics, "Stored pattern candidates", String(patterns.length), "Stored patterns are not substituted for a fresh statistical finding.");
         response.toolRuns.push(resultTool(key, "completed", `${patterns.length} stored pattern candidate${patterns.length === 1 ? "" : "s"} were retrieved.`, ["RIKKU patterns"], patterns.length));
         continue;
@@ -719,11 +932,14 @@ export async function orchestrateAsk(input: AskOrchestrationInput): Promise<AskR
   }
 
   if (!response.toolRuns.some((tool) => tool.key === "run_skeptic_check")) {
-    response.confidence = confidenceFor(summary, activity, marketMatched);
+    response.confidence = answerKind === "fact"
+      ? { level: "high", reasons: ["This value comes directly from the latest completed import summary."] }
+      : confidenceFor(summary, activity, marketMatched);
   }
+  applyQuestionFocusedFinding(response, intent);
   const evidenceToolCompleted = response.toolRuns.some((tool) => tool.status === "completed"
     && tool.key !== "get_import_summary" && tool.key !== "run_skeptic_check");
-  if ((!activity && summary.fills === 0) || !evidenceToolCompleted) {
+  if (answerKind !== "fact" && ((!activity && summary.fills === 0) || !evidenceToolCompleted)) {
     response.status = "insufficient_data";
     response.finding = {
       headline: summary.fills === 0
@@ -731,6 +947,7 @@ export async function orchestrateAsk(input: AskOrchestrationInput): Promise<AskR
         : "The requested evidence could not be established from the imported data.",
       summary: "RIKKU can report import coverage but will not invent activity, fee, timing, or market metrics.",
     };
+    response.interpretation = response.finding.summary;
   }
   return response;
 }
