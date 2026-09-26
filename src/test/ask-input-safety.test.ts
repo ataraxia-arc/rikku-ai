@@ -3,7 +3,7 @@ import { containsSensitiveAskInput, PERSISTED_ASK_QUESTION, scrubAskResponseForP
 import type { AskResponse } from "@/lib/ask/types";
 
 const response: AskResponse = {
-  version: "ask-evidence-v3",
+  version: "ask-evidence-v18",
   status: "completed",
   mode: "analyst",
   answerKind: "analysis",
@@ -30,6 +30,10 @@ describe("Ask input safety", () => {
     "passphrase: private value",
     "Authorization: Bearer this-token-is-private",
     `sb_${"secret"}_exampleTokenValue`,
+    `sk-${"A".repeat(24)}`,
+    `gsk_${"B".repeat(24)}`,
+    "a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4",
+    `eyJ${"A".repeat(12)}.${"B".repeat(16)}.${"C".repeat(20)}`,
     "-----BEGIN PRIVATE KEY-----",
   ])("rejects credential-shaped input", (input) => {
     expect(containsSensitiveAskInput(input), input).toBe(true);

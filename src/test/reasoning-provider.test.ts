@@ -84,7 +84,7 @@ describe("reasoning provider abstraction", () => {
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({ model: "reasoning-model" });
   });
 
-  it("uses Groq JSON Object mode before strict server-side validation", async () => {
+  it("uses Groq strict JSON Schema mode before independent server-side validation", async () => {
     const output = {
       answerKind: "fact",
       finding: { headline: "Twelve fills.", summary: "The import contains 12 fills." },
@@ -110,11 +110,65 @@ describe("reasoning provider abstraction", () => {
       LLM_MODEL: "openai/gpt-oss-120b",
     });
 
-    await expect(provider.generateStructuredResponse({ mode: "analyst", prompt: "How many fills do I have?" })).resolves.toEqual(output);
+    await expect(provider.generateStructuredResponse({
+      mode: "analyst",
+      prompt: "How many fills do I have?",
+      allowedEvidenceLabels: ["Fills imported", "Known fill fees by coin"],
+    })).resolves.toEqual(output);
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body.response_format.type).toBe("json_schema");
+    expect(body.response_format.json_schema).toMatchObject({ name: "rikku_answer", strict: true });
+    expect(body.response_format.json_schema.schema).toMatchObject({
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        reasoningPoints: { maxItems: 4 },
+        evidenceLabels: { maxItems: 12, items: { enum: ["Fills imported", "Known fill fees by coin"] } },
+        suggestedFollowups: { maxItems: 3 },
+      },
+    });
+    expect(body.max_completion_tokens).toBe(1_000);
+    expect(body.reasoning_effort).toBe("low");
+    expect(body.include_reasoning).toBe(false);
+    expect(body.temperature).toBe(0.2);
+    expect(body.messages[0].content).toContain("required strict JSON schema");
+    expect(body.messages[0].content).toContain("never invent financial facts");
+
+    await expect(provider.generateStructuredResponse({
+      mode: "analyst",
+      prompt: "Correct the rejected answer",
+      retryInstruction: "Avoid the rejected claim.",
+      allowedEvidenceLabels: ["Fills imported"],
+    })).resolves.toEqual(output);
+    const retryBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+    expect(retryBody.max_completion_tokens).toBe(600);
+    expect(retryBody.reasoning_effort).toBe("low");
+    expect(retryBody.response_format.json_schema.schema.properties.reasoningPoints.maxItems).toBe(0);
+  });
+
+  it("uses Groq JSON-object compatibility mode before strict server-side plan validation", async () => {
+    const output = {
+      understoodQuestion: "Count verified fills", informationNeeds: ["fill count"], toolRequests: ["get_import_summary"],
+      needsConversationContext: false, referencedPriorFindingIds: [], analysisDepth: "factual",
+      reasoningGoal: "Report the verified count", requiresJoinedAnalysis: false, answerKind: "fact", requestedImportMetric: "fills",
+    };
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () => new Response(JSON.stringify({
+      id: "chatcmpl-plan-test", object: "chat.completion", created: 0, model: "openai/gpt-oss-120b",
+      choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: JSON.stringify(output) } }],
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = createReasoningProvider({
+      LLM_API_KEY: "groq-key", LLM_BASE_URL: "https://api.groq.com/openai/v1", LLM_MODEL: "openai/gpt-oss-120b",
+    });
+
+    await expect(provider.generateStructuredPlan({ mode: "analyst", prompt: "Count the fills" })).resolves.toEqual(output);
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
     expect(body.response_format).toEqual({ type: "json_object" });
-    expect(body.max_completion_tokens).toBe(2_000);
-    expect(body.messages[0].content).toContain('"answerKind": "fact | analysis | investigation"');
+    expect(body.reasoning_effort).toBe("low");
+    expect(body.max_completion_tokens).toBe(500);
+    expect(body.temperature).toBe(0);
+    expect(body.messages[0].content).toContain("toolRequests: array of exact names");
+    expect(body.messages[0].content).toContain("requestedImportMetric");
   });
 
   it.each([
@@ -122,6 +176,7 @@ describe("reasoning provider abstraction", () => {
     [{ status: 429, code: "credit_balance_exhausted" }, "QUOTA"],
     [{ status: 429, code: "rate_limit_exceeded", type: "tokens", message: "quota exceeded" }, "RATE_LIMIT"],
     [{ status: 400, code: "json_validate_failed", type: "invalid_request_error" }, "INVALID_RESPONSE"],
+    [{ status: 400, code: "tool_use_failed", type: "invalid_request_error" }, "INVALID_RESPONSE"],
     [{ status: 404, code: "model_not_found" }, "MODEL_NOT_FOUND"],
     [new TypeError("connection failed"), "NETWORK"],
     [new DOMException("timed out", "TimeoutError"), "TIMEOUT"],
@@ -130,8 +185,44 @@ describe("reasoning provider abstraction", () => {
     expect(normalizeReasoningProviderError(error).code).toBe(code);
   });
 
+  it("retains only safe rate-limit reset durations", () => {
+    const safe = normalizeReasoningProviderError({
+      status: 429,
+      code: "rate_limit_exceeded",
+      type: "tokens",
+      message: "Token rate limit reached: Limit 8000, Used 3100, Requested 5400.",
+      headers: new Headers({ "retry-after": "12", "x-ratelimit-reset-tokens": "2m59.5s" }),
+    });
+    expect(safe.safeProviderDetails).toMatchObject({
+      retryAfter: "12",
+      tokenReset: "2m59.5s",
+      tokenLimit: 8_000,
+      tokenUsed: 3_100,
+      tokenRequested: 5_400,
+    });
+    const rejected = normalizeReasoningProviderError({
+      status: 429,
+      headers: { "retry-after": "Bearer secret-value", "x-ratelimit-reset-tokens": "not-a-duration" },
+    });
+    expect(rejected.safeProviderDetails).toMatchObject({ retryAfter: "", tokenReset: "" });
+  });
+
   it("preserves an already normalized invalid-response error", () => {
     const error = new ReasoningProviderError("INVALID_RESPONSE");
     expect(normalizeReasoningProviderError(error)).toBe(error);
+  });
+
+  it("drops arbitrary or credential-shaped provider diagnostics before logging", () => {
+    const arbitrary = normalizeReasoningProviderError({ status: 500, code: "unsafe value with spaces", type: `gsk_${"X".repeat(24)}` });
+    expect(arbitrary.safeProviderDetails).toEqual({
+      status: 500,
+      code: "",
+      type: "",
+      retryAfter: "",
+      tokenReset: "",
+      tokenLimit: null,
+      tokenUsed: null,
+      tokenRequested: null,
+    });
   });
 });

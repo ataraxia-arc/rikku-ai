@@ -8,7 +8,12 @@ const credentialPatterns = [
   /\b(?:access[-_ ]?(?:sign|key|passphrase|timestamp)|authorization)\b/i,
   /\b(?:bearer|basic)\s+[^\s]{8,}/i,
   /\bsb_(?:secret|publishable)_[A-Za-z0-9_-]+\b/i,
-  /\b(?:sk|rk)_[A-Za-z0-9_-]{12,}\b/i,
+  /\b(?:sk|rk)[_-][A-Za-z0-9_-]{12,}\b/i,
+  /\bgsk_[A-Za-z0-9_-]{12,}\b/i,
+  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/,
+  // Ask never needs opaque identifiers this long. Fail closed on unlabeled,
+  // mixed alphanumeric tokens that can otherwise resemble exchange secrets.
+  /(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]{32,}(?![A-Za-z0-9_-]))(?=[A-Za-z0-9_-]*[A-Za-z])(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]+/,
   /-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----/i,
 ];
 

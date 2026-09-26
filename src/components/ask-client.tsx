@@ -4,7 +4,6 @@ import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { ArrowUp, BrainCircuit, Check, Database, Search, Sparkles, Zap } from "lucide-react";
 import type { AskMode, AskResponse } from "@/lib/ask/types";
-import { planAskTools } from "@/lib/ask/orchestrator";
 
 const modes = [
   { key: "scout", label: "Scout", icon: Zap, note: "Quick focused analysis" },
@@ -21,6 +20,11 @@ type ChatMessage = {
   plannedSteps?: string[];
 };
 
+type ConversationTurn = {
+  question: string;
+  conclusion: string;
+};
+
 const safeErrorCopy: Record<string, string> = {
   AUTH_REQUIRED: "Your RIKKU session expired. Sign in again.",
   SUPABASE_NOT_CONFIGURED: "RIKKU data services are not configured yet.",
@@ -28,28 +32,24 @@ const safeErrorCopy: Record<string, string> = {
   ASK_SENSITIVE_INPUT: "Do not enter API credentials or secrets in Ask RIKKU.",
   ASK_REQUEST_TOO_LARGE: "That question is too long. Please keep it under 500 characters.",
   ASK_INVALID_REQUEST: "Enter a short question about your imported activity.",
+  ASK_CONTEXT_NOT_FOUND: "That saved RIKKU context is no longer available. Choose another analysis or ask a new question.",
+  ASK_RATE_LIMITED: "Ask RIKKU is handling several requests. Try again shortly.",
   LLM_INVALID_RESPONSE: "RIKKU's reasoning provider returned an invalid answer. Your imported data remains safe. Try again shortly.",
 };
 
-const toolStepLabels: Record<string, string> = {
-  get_import_summary: "Reading Bitget activity…",
-  analyze_trading_activity: "Analyzing imported activity…",
-  analyze_fees: "Calculating known fees…",
-  analyze_symbol_concentration: "Checking symbol activity…",
-  analyze_trade_timing: "Analyzing activity timing…",
-  analyze_market_context: "Matching market context…",
-  analyze_market_regime: "Classifying market regime…",
-  retrieve_memories: "Retrieving relevant memory…",
-  retrieve_patterns: "Reviewing stored patterns…",
-  analyze_portfolio: "Reading portfolio evidence…",
-  analyze_tail_risk: "Checking measurable risk…",
-  analyze_overtrading: "Checking overtrading evidence…",
-  analyze_disposition_effect: "Checking disposition evidence…",
-  retrieve_similar_scenarios: "Retrieving similar scenarios…",
-  run_skeptic_check: "Running Skeptic validation…",
-};
+const progressSteps = [
+  "Understanding your question…",
+  "Checking relevant verified evidence…",
+  "Validating the answer…",
+];
 
-function displayError(code: unknown) {
+function displayError(code: unknown, retryAfterSeconds?: unknown) {
+  if (code === "ASK_RATE_LIMITED") {
+    const retry = typeof retryAfterSeconds === "number" && Number.isInteger(retryAfterSeconds) && retryAfterSeconds > 0 && retryAfterSeconds <= 3_600
+      ? retryAfterSeconds
+      : null;
+    if (retry) return `Ask RIKKU is handling several requests. Try again in ${retry} ${retry === 1 ? "second" : "seconds"}.`;
+  }
   return typeof code === "string" && safeErrorCopy[code]
     ? safeErrorCopy[code]
     : "RIKKU could not prepare an evidence-backed answer. Try again shortly.";
@@ -66,6 +66,15 @@ function statusLabel(status: AskResponse["status"]) {
   return "RIKKU ANALYSIS";
 }
 
+function boundedConversationConclusion(response: AskResponse) {
+  return [
+    response.finding.headline,
+    response.finding.summary,
+    response.interpretation,
+    ...response.reasoningPoints.map((point) => point.statement),
+  ].filter(Boolean).join(" ").trim().slice(0, 600);
+}
+
 function AnswerCard({ response }: { response: AskResponse }) {
   const connectHref = response.status === "needs_connection" ? "/onboarding/bitget" : "/onboarding/import";
   const connectLabel = response.status === "needs_connection" ? "Connect Bitget" : "Import Bitget activity";
@@ -80,7 +89,7 @@ function AnswerCard({ response }: { response: AskResponse }) {
       {response.reasoningNotice ? <div className="source-note"><span>REASONING STATUS</span><p>{response.reasoningNotice}</p></div> : null}
 
       {!isDirectFact && response.interpretation && response.interpretation !== response.finding.summary ? (
-        <div className="analysis-finding"><span>INTERPRETATION</span><p>{response.interpretation}</p></div>
+        <div className="analysis-finding"><span>{response.reasoningStatus === "external_llm" ? "RIKKU ANSWER" : "INTERPRETATION"}</span><p>{response.interpretation}</p></div>
       ) : null}
       <div className="analysis-finding">
         <span>FINDING</span>
@@ -172,7 +181,7 @@ export function AskClient({ initialPrompt = "", contextId = null, defaultMode = 
   const [question, setQuestion] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const messageId = useRef(0);
-  const history = useRef<string[]>([]);
+  const history = useRef<ConversationTurn[]>([]);
   const threadId = useRef<string>(globalThis.crypto?.randomUUID?.() ?? "00000000-0000-4000-8000-000000000001");
   const initialPromptStarted = useRef(false);
   const [isRunning, setIsRunning] = useState(false);
@@ -181,16 +190,15 @@ export function AskClient({ initialPrompt = "", contextId = null, defaultMode = 
     const trimmed = nextQuestion.trim().slice(0, 500);
     if (!trimmed || isRunning) return;
     const id = ++messageId.current;
-    const priorQuestions = history.current.slice(-8);
-    const plannedSteps = planAskTools(trimmed, requestedMode, priorQuestions).map((key) => toolStepLabels[key] ?? "Checking evidence…");
-    history.current = [...history.current, trimmed].slice(-8);
+    const priorConversation = history.current.slice(-4);
+    const plannedSteps = progressSteps;
     setMessages((previous) => [...previous, { id, question: trimmed, loading: true, plannedSteps }]);
     setIsRunning(true);
     try {
       const result = await fetch("/api/ask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: trimmed, mode: requestedMode, history: priorQuestions, threadId: threadId.current, contextId }),
+        body: JSON.stringify({ question: trimmed, mode: requestedMode, history: priorConversation, threadId: threadId.current, contextId }),
       });
       let payload: unknown;
       try {
@@ -201,10 +209,13 @@ export function AskClient({ initialPrompt = "", contextId = null, defaultMode = 
       const record = payload && typeof payload === "object" && !Array.isArray(payload) ? payload as Record<string, unknown> : {};
       const answer = record.response;
       if (!result.ok || !answer || typeof answer !== "object") {
-        setMessages((previous) => previous.map((message) => message.id === id ? { ...message, loading: false, error: displayError(record.code) } : message));
+        setMessages((previous) => previous.map((message) => message.id === id ? { ...message, loading: false, error: displayError(record.code, record.retryAfterSeconds) } : message));
         return;
       }
-      setMessages((previous) => previous.map((message) => message.id === id ? { ...message, loading: false, response: answer as AskResponse } : message));
+      const typedAnswer = answer as AskResponse;
+      const conclusion = boundedConversationConclusion(typedAnswer);
+      if (conclusion) history.current = [...history.current, { question: trimmed, conclusion }].slice(-4);
+      setMessages((previous) => previous.map((message) => message.id === id ? { ...message, loading: false, response: typedAnswer } : message));
     } catch {
       setMessages((previous) => previous.map((message) => message.id === id ? { ...message, loading: false, error: "RIKKU could not reach the evidence service. Try again shortly." } : message));
     } finally {
@@ -238,8 +249,8 @@ export function AskClient({ initialPrompt = "", contextId = null, defaultMode = 
             <div className="user-question"><span>YOU</span><p>{message.question}</p></div>
             {message.loading ? (
               <article className="analysis-response analysis-empty-response" aria-label="RIKKU is analyzing imported data">
-                <div className="analysis-label"><span className="analysis-mark"><Sparkles size={15} /></span><div><strong>READING REAL DATA</strong><span>{modeLabel(mode)} tool plan in progress</span></div></div>
-                <div className="analysis-finding"><span>ANALYSIS PROGRESS</span><h2>Preparing an evidence-backed answer.</h2><p>RIKKU is running its mode-specific deterministic tool plan against only the imported records required by this question.</p></div>
+                <div className="analysis-label"><span className="analysis-mark"><Sparkles size={15} /></span><div><strong>READING REAL DATA</strong><span>{modeLabel(mode)} analysis in progress</span></div></div>
+                <div className="analysis-finding"><span>ANALYSIS PROGRESS</span><h2>Preparing an evidence-backed answer.</h2><p>RIKKU is interpreting your question and checking the relevant imported records.</p></div>
                 <ul className="analysis-progress" aria-label="Analysis steps">
                   {message.plannedSteps?.map((step) => <li key={step}>{step}</li>)}
                   <li>Preparing the answer…</li>

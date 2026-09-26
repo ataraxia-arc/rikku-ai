@@ -2,6 +2,7 @@ import {
   ASK_ANALYSIS_VERSION,
   ASK_TOOL_BUDGETS,
   AskDataAccessError,
+  askToolKeys,
   type AskConfidence,
   type AskAnswerKind,
   type AskDataSource,
@@ -16,26 +17,13 @@ import {
   type AskToolKey,
   type AskToolRun,
 } from "@/lib/ask/types";
+import type { SemanticToolPlan } from "@/lib/ask/semantic-planner";
 
 const SCALE = 10n ** 18n;
 const DECIMAL = /^(-?)(\d+)(?:\.(\d{1,18}))?$/;
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-type Intent = {
-  activity: boolean;
-  fees: boolean;
-  symbols: boolean;
-  timing: boolean;
-  market: boolean;
-  memory: boolean;
-  patterns: boolean;
-  portfolio: boolean;
-  risk: boolean;
-  limitations: boolean;
-  deep: boolean;
-  fact: "orders" | "fills" | "financial_records" | "instruments" | "candles" | "completed_trades" | null;
-  followUp: "why" | "alternatives" | "counter_evidence" | "change_conclusion" | "next_investigation" | "bounded_inference" | null;
-};
+type RequestedImportMetric = NonNullable<SemanticToolPlan["requestedImportMetric"]>;
 
 type ParsedFill = {
   category: string | null;
@@ -78,7 +66,11 @@ export type AskOrchestrationInput = {
   mode: AskMode;
   /** Last user questions only; assistant prose is never treated as evidence. */
   history?: string[];
+  /** Whether the server resolved a user-owned application context for this request. */
+  selectedContextAvailable?: boolean;
   initialImport?: AskImportSummary | null;
+  /** Server-validated semantic plan; no raw user wording is used for tool selection. */
+  plan?: SemanticToolPlan | null;
 };
 
 function decimalUnits(value: string | null): bigint | null {
@@ -141,123 +133,19 @@ function normalizeQuestion(value: string) {
   return value.trim().replace(/\s+/g, " ").slice(0, 500);
 }
 
-function followUpFocus(value: string): Intent["followUp"] {
-  if (/\b(why|reason(?:ing)?)\b/.test(value)) return "why";
-  if (/\b(another explanation|alternative explanation|something else|could it be)\b/.test(value)) return "alternatives";
-  if (/\b(evidence .*against|counter[- ]?evidence|weakens?|contradict)\b/.test(value)) return "counter_evidence";
-  if (/\b(change (?:your|the) conclusion|change your mind|strengthen|weaken)\b/.test(value)) return "change_conclusion";
-  if (/\b(investigat(?:e|ion) next|look at next|check next)\b/.test(value)) return "next_investigation";
-  if (/\b(most interesting|without overstating|infer)\b/.test(value)) return "bounded_inference";
-  return null;
-}
-
-function classify(question: string, history: string[]): Intent {
-  const lower = question.toLowerCase();
-  const followUp = followUpFocus(lower);
-  const explicitSubject = /\b(orders?|fills?|financial records?|fees?|cost|commission|symbols?|instruments?|timing|market|regime|candles?|memory|memories|patterns?|portfolio|assets?|balances?|positions?|risks?|drawdown|pnl|return|win rate|completed trades?|missing|insufficient)\b/.test(lower);
-  const contextualReference = /\b(it|that|those|them|same|more|again|conclusion|interpretation|explanation|idea)\b/.test(lower);
-  const anchor = [...history].reverse().find((item) => !followUpFocus(item.toLowerCase())) ?? history.at(-1) ?? "";
-  const contextual = !explicitSubject && (followUp !== null || contextualReference)
-    ? `${lower} ${anchor.toLowerCase()}`
-    : lower;
-  const countQuestion = /\b(how many|count|number of)\b/.test(lower);
-  const fact = countQuestion && /\borders?\b/.test(lower) ? "orders"
-    : countQuestion && /\bfills?\b/.test(lower) ? "fills"
-      : countQuestion && /\bfinancial records?\b/.test(lower) ? "financial_records"
-        : countQuestion && /\b(instruments?|symbols?)\b/.test(lower) ? "instruments"
-          : countQuestion && /\bcandles?\b/.test(lower) ? "candles"
-            : countQuestion && /\bcompleted trades?\b/.test(lower) ? "completed_trades"
-              : null;
-  const activity = /\b(analy[sz]e|activity|traded|trade most|latest activity|what .*know|what .*notice|behavior|strongest evidence|patterns?)\b/.test(contextual);
-  return {
-    activity,
-    fees: /\b(fee|fees|cost|commission)\b/.test(contextual),
-    symbols: /\b(symbol|instrument|traded most|most active|concentration)\b/.test(contextual),
-    timing: /\b(when|time of day|hour|timing|often)\b/.test(contextual),
-    market: /\b(market|volatil|regime|candle|condition)\b/.test(contextual),
-    memory: /\b(remember|memory|memories)\b/.test(contextual),
-    patterns: /\b(patterns?|recurring)\b/.test(contextual),
-    portfolio: /\b(portfolio|asset|balance|position|exposure)\b/.test(contextual),
-    risk: /\b(risks?|tail|var|cvar|drawdown|overtrad|disposition|profit|pnl|return|win rate)\b/.test(contextual),
-    limitations: /\b(cannot|can.t|not determine|missing|why can.t|why cant|insufficient)\b/.test(contextual),
-    deep: /\b(investigat|deep|all|comprehensive)\b/.test(contextual),
-    fact,
-    followUp,
-  };
-}
-
-function answerKindFor(mode: AskMode, intent: Intent): AskAnswerKind {
-  if (intent.fact) return "fact";
-  if (mode === "investigator" || intent.deep) return "investigation";
-  return "analysis";
-}
-
-function toolPlan(mode: AskMode, intent: Intent): AskToolKey[] {
-  const tools: AskToolKey[] = ["get_import_summary"];
-  const add = (key: AskToolKey) => {
-    if (!tools.includes(key)) tools.push(key);
-  };
-  const focused = intent.fees ? "analyze_fees"
-    : intent.symbols ? "analyze_symbol_concentration"
-      : intent.timing ? "analyze_trade_timing"
-        : intent.market ? "analyze_market_context"
-          : intent.memory ? "retrieve_memories"
-            : "analyze_trading_activity";
-
-  if (intent.fact) return tools;
-
-  if (mode === "scout") {
-    add(focused);
-    return tools;
-  }
-
-  const broadActivity = (intent.activity && !intent.patterns) || intent.deep || (!intent.fees && !intent.symbols && !intent.timing && !intent.market && !intent.memory && !intent.patterns && !intent.portfolio && !intent.risk && !intent.limitations);
-  if (broadActivity) {
-    add("analyze_trading_activity");
-    add("analyze_fees");
-    add("analyze_symbol_concentration");
-    add("analyze_trade_timing");
-    add("analyze_market_context");
-    add("analyze_market_regime");
-    add("retrieve_memories");
-    if (intent.patterns) {
-      add("retrieve_memories");
-      add("retrieve_patterns");
-    }
-  } else {
-    add(focused);
-    if (intent.market) add("analyze_market_regime");
-    if (intent.memory) add("retrieve_memories");
-    if (intent.patterns) {
-      add("retrieve_memories");
-      add("retrieve_patterns");
-    }
-    if (intent.portfolio) add("analyze_portfolio");
-    if (intent.risk) {
-      add("analyze_symbol_concentration");
-      add("analyze_fees");
-      add("analyze_tail_risk");
-    }
-  }
-
-  if (mode === "investigator") {
-    add("analyze_trading_activity");
-    add("analyze_fees");
-    add("analyze_symbol_concentration");
-    add("analyze_trade_timing");
-    add("analyze_market_context");
-    add("analyze_market_regime");
-    add("retrieve_memories");
-    add("retrieve_patterns");
-    if (intent.risk) {
-      add("analyze_overtrading");
-      add("analyze_disposition_effect");
-      add("retrieve_similar_scenarios");
-    }
-  }
+/** The model may propose tools, but the server rechecks the allowlist and budget. */
+export function planAskTools(mode: AskMode, semanticPlan?: SemanticToolPlan | null): AskToolKey[] {
+  if (!semanticPlan) return ["get_import_summary"];
+  const allowed = new Set<string>(askToolKeys);
+  const requested = semanticPlan.toolRequests;
+  const unique = [...new Set(requested)].filter((key): key is AskToolKey =>
+    typeof key === "string" && allowed.has(key) && key !== "get_import_summary" && key !== "run_skeptic_check");
+  if (semanticPlan.answerKind === "fact" && semanticPlan.requestedImportMetric && !unique.length) return ["get_import_summary"];
   const budget = ASK_TOOL_BUDGETS[mode];
-  const bounded = tools.filter((key) => key !== "run_skeptic_check").slice(0, Math.max(1, budget - 1));
-  return [...bounded, "run_skeptic_check"];
+  const needsSkeptic = semanticPlan.answerKind !== "fact" || unique.length > 0;
+  // Scout's Skeptic safety pass is mandatory but does not consume its one evidence-tool slot.
+  const selected = unique.slice(0, budget - 1 - Number(needsSkeptic && mode !== "scout"));
+  return ["get_import_summary", ...selected, ...(needsSkeptic ? ["run_skeptic_check" as const] : [])];
 }
 
 function parseFills(rows: AskFill[]): ParsedFill[] {
@@ -424,54 +312,49 @@ function confidenceFor(summary: AskImportSummary, activity: Activity | null, mar
   return { level: "moderate", reasons };
 }
 
-function importMetrics(summary: AskImportSummary, metrics: AskMetric[], intent: Intent) {
-  const add = (key: NonNullable<Intent["fact"]>) => {
+function importMetrics(summary: AskImportSummary, metrics: AskMetric[], selectedTools: AskToolKey[], answerKind: AskAnswerKind, requestedMetric: RequestedImportMetric | null) {
+  const add = (key: RequestedImportMetric) => {
     if (key === "orders") addMetric(metrics, "Orders imported", String(summary.orders));
     if (key === "fills") addMetric(metrics, "Fills imported", String(summary.fills));
     if (key === "financial_records") addMetric(metrics, "Financial records", String(summary.financialRecords), "Reported separately from fill fees to avoid double-counting.");
     if (key === "instruments") addMetric(metrics, "Instruments observed", String(summary.instruments));
     if (key === "candles") addMetric(metrics, "Market candles", String(summary.marketCandles));
     if (key === "completed_trades") addMetric(metrics, "Completed trades", summary.completedTrades ? String(summary.completedTrades) : "Not yet reconstructable");
+    if (key === "assets") addMetric(metrics, "Assets imported", String(summary.assets));
+    if (key === "positions") addMetric(metrics, "Positions imported", String(summary.positions));
   };
-  if (intent.fact) {
-    add(intent.fact);
+  if (answerKind === "fact" && requestedMetric) {
+    add(requestedMetric);
     return;
   }
-  if (intent.fees) {
+  const tools = new Set(selectedTools);
+  if (tools.has("analyze_trading_activity") || (answerKind === "fact" && !requestedMetric)) {
+    for (const key of ["orders", "fills", "financial_records", "instruments", "candles", "completed_trades"] as const) add(key);
+  }
+  if (tools.has("analyze_fees")) {
     add("fills");
     add("financial_records");
-    return;
   }
-  if (intent.symbols) {
+  if (tools.has("analyze_symbol_concentration")) {
     add("fills");
     add("instruments");
-    return;
   }
-  if (intent.timing) {
+  if (tools.has("analyze_trade_timing")) {
     add("fills");
-    return;
   }
-  if (intent.market) {
+  if (tools.has("analyze_market_context") || tools.has("analyze_market_regime")) {
     add("fills");
     add("candles");
-    return;
   }
-  if (intent.portfolio) {
-    addMetric(metrics, "Assets imported", String(summary.assets));
-    addMetric(metrics, "Positions imported", String(summary.positions));
-    return;
+  if (tools.has("analyze_portfolio")) {
+    add("assets");
+    add("positions");
   }
-  if (intent.risk || intent.patterns || intent.memory || intent.limitations) {
+  if (selectedTools.some((key) => ["retrieve_memories", "retrieve_patterns", "analyze_tail_risk", "analyze_overtrading", "analyze_disposition_effect", "retrieve_similar_scenarios"].includes(key))) {
     add("fills");
     add("completed_trades");
-    return;
   }
-  add("orders");
-  add("fills");
-  add("financial_records");
-  add("instruments");
-  add("candles");
-  add("completed_trades");
+  if (!metrics.length) add("fills");
 }
 
 function baseResponse(question: string, mode: AskMode, answerKind: AskAnswerKind, status: AskResponse["status"], finding: AskResponse["finding"]): AskResponse {
@@ -506,80 +389,39 @@ function metricValue(response: AskResponse, label: string) {
   return response.evidence.find((metric) => metric.label === label)?.value ?? null;
 }
 
-function applyQuestionFocusedFinding(response: AskResponse, intent: Intent) {
-  const fees = metricValue(response, "Known fill fees by coin");
-  const symbols = metricValue(response, "Activity by symbol");
-  const timing = metricValue(response, "Most active time window");
-  const memories = metricValue(response, "Relevant RIKKU memories");
-  const patterns = metricValue(response, "Stored pattern candidates");
-
-  const factValues: Record<NonNullable<Intent["fact"]>, { label: string; noun: string }> = {
+function applyEvidenceFinding(response: AskResponse, requestedMetric: RequestedImportMetric | null) {
+  const factValues: Record<RequestedImportMetric, { label: string; noun: string }> = {
     orders: { label: "Orders imported", noun: "imported orders" },
     fills: { label: "Fills imported", noun: "imported fills" },
     financial_records: { label: "Financial records", noun: "imported financial records" },
     instruments: { label: "Instruments observed", noun: "observed instruments" },
     candles: { label: "Market candles", noun: "imported market candles" },
     completed_trades: { label: "Completed trades", noun: "completed reconstructed trades" },
+    assets: { label: "Assets imported", noun: "imported assets" },
+    positions: { label: "Positions imported", noun: "imported positions" },
   };
-
-  if (intent.fact) {
-    const fact = factValues[intent.fact];
+  if (response.answerKind === "fact" && requestedMetric) {
+    const fact = factValues[requestedMetric];
     const value = metricValue(response, fact.label) ?? "Not available";
     response.finding = {
-      headline: `You currently have ${value} ${fact.noun}.`,
+      headline: requestedMetric === "completed_trades" && value === "Not yet reconstructable"
+        ? "Completed trades are not yet reconstructable."
+        : `You currently have ${value} ${fact.noun}.`,
       summary: response.dataWindow.label ? `Coverage: ${response.dataWindow.label}.` : "The completed import did not report a usable coverage window.",
     };
-  } else if (intent.limitations) {
+  } else if (response.answerKind === "fact") {
     response.finding = {
-      headline: "The current import supports descriptive activity, but not completed-trade performance claims.",
-      summary: response.limitations[0] ?? "The available evidence does not support the requested conclusion yet.",
+      headline: "The latest completed Bitget import summary is available.",
+      summary: response.dataWindow.label ? `Coverage: ${response.dataWindow.label}.` : "The completed import did not report a usable coverage window.",
     };
-  } else if (intent.fees && fees) {
-    response.finding = {
-      headline: `Known fill-level fees: ${fees}.`,
-      summary: "RIKKU kept fill fees separate from financial-record fees because overlap has not been proven.",
-    };
-  } else if (intent.symbols && symbols) {
-    response.finding = {
-      headline: `Imported fill activity by symbol: ${symbols}.`,
-      summary: "This is fill-frequency evidence, not proof of preference or profitability.",
-    };
-  } else if (intent.timing && timing) {
-    response.finding = {
-      headline: `Your most active observed UTC window was ${timing}.`,
-      summary: "This describes the imported window only and is not yet a stable behavioral pattern.",
-    };
-  } else if (intent.market && response.marketContext) {
-    response.finding = {
-      headline: response.marketContext.available ? "Market context was matched to imported fill activity." : "Market context could not be matched reliably.",
-      summary: response.marketContext.summary,
-    };
-  } else if (intent.memory) {
-    response.finding = memories ? {
-      headline: `${memories} evidence-linked memor${memories === "1" ? "y is" : "ies are"} currently available.`,
-      summary: "Stored memory remains separate from raw Bitget records and keeps its evidence classification visible.",
-    } : {
-      headline: "No evidence-linked RIKKU memories are available yet.",
-      summary: "RIKKU did not turn a short imported history into an unsupported behavioral memory.",
-    };
-  } else if (intent.patterns) {
-    response.finding = patterns ? {
-      headline: `${patterns} stored pattern candidates are available for review.`,
-      summary: "Stored candidates are not treated as validated behavior without sufficient supporting evidence.",
-    } : {
-      headline: "No reliable behavioral pattern is established yet.",
-      summary: "The current fill sample and unreconstructed trades are insufficient for a defensible behavioral conclusion.",
-    };
-  } else if (intent.portfolio) {
-    response.finding = {
-      headline: "Bitget returned no current assets or positions during the latest sync.",
-      summary: "RIKKU will not estimate portfolio value, allocation, or exposure from order and fill history.",
-    };
-  } else if (intent.risk) {
-    response.finding = {
-      headline: "Only limited descriptive risk evidence is available from the current import.",
-      summary: "Closed-trade drawdown, expectancy, VaR, and CVaR remain unavailable without reconstructed return history.",
-    };
+  } else {
+    const completed = response.toolRuns.filter((run) => run.status === "completed" && run.key !== "get_import_summary" && run.key !== "run_skeptic_check");
+    if (completed.length === 1 && completed[0].key !== "analyze_trading_activity") {
+      response.finding = {
+        headline: completed[0].summary,
+        summary: "This is verified descriptive evidence, not a profitability or behavioral conclusion.",
+      };
+    }
   }
   response.interpretation = response.finding.summary;
   response.suggestedFollowups = response.status === "completed" && response.answerKind !== "fact" ? [
@@ -590,9 +432,16 @@ function applyQuestionFocusedFinding(response: AskResponse, intent: Intent) {
 
 export async function orchestrateAsk(input: AskOrchestrationInput): Promise<AskResponse> {
   const question = normalizeQuestion(input.question);
-  const history = (input.history ?? []).map(normalizeQuestion).filter(Boolean).slice(-8);
-  const intent = classify(question, history);
-  const answerKind = answerKindFor(input.mode, intent);
+  const hasConversationContext = (input.history ?? []).some((entry) => normalizeQuestion(entry).length > 0);
+  const missingRequiredContext = input.plan?.needsConversationContext === true
+    && !hasConversationContext
+    && input.selectedContextAvailable !== true;
+  const selectedTools = missingRequiredContext ? ["get_import_summary" as const] : planAskTools(input.mode, input.plan);
+  const requestedAnalysis = selectedTools.some((key) => key !== "get_import_summary" && key !== "run_skeptic_check");
+  const answerKind: AskAnswerKind = input.plan?.answerKind === "fact" && requestedAnalysis
+    ? "analysis"
+    : input.plan?.answerKind ?? (input.mode === "investigator" ? "investigation" : "analysis");
+  const requestedMetric = input.plan?.requestedImportMetric ?? null;
   const context: AnalysisContext = { source: input.source };
 
   let connection;
@@ -648,9 +497,9 @@ export async function orchestrateAsk(input: AskOrchestrationInput): Promise<AskR
   });
   const metrics = response.evidence;
   response.dataWindow = formatWindow(summary.earliestRecordAt, summary.latestRecordAt);
-  importMetrics(summary, metrics, intent);
+  importMetrics(summary, metrics, selectedTools, answerKind, requestedMetric);
   addSource(response.sources, "Bitget import summary", response.dataWindow.label ? `Coverage: ${response.dataWindow.label}` : undefined);
-  const summaryMetric = intent.fact ? metrics[0] : null;
+  const summaryMetric = answerKind === "fact" && requestedMetric ? metrics[0] : null;
   response.toolRuns.push(resultTool(
     "get_import_summary",
     "completed",
@@ -659,14 +508,43 @@ export async function orchestrateAsk(input: AskOrchestrationInput): Promise<AskR
     summary.fills,
   ));
 
-  const needsTradeReconstruction = intent.activity || intent.patterns || intent.risk || intent.limitations || intent.deep || intent.followUp !== null;
+  if (!input.plan) {
+    response.status = "insufficient_data";
+    response.finding = {
+      headline: "RIKKU could not interpret this question safely.",
+      summary: "The verified import summary is available, but semantic planning did not complete, so no topic-specific analyzer ran.",
+    };
+    response.interpretation = response.finding.summary;
+    response.confidence = { level: "not_assessable", reasons: ["No validated semantic plan was available for this request."] };
+    response.limitations.push("Semantic planning did not complete, so RIKKU returned only verified import-summary evidence.");
+    return response;
+  }
+
+  if (missingRequiredContext) {
+    response.status = "insufficient_data";
+    response.finding = {
+      headline: "RIKKU needs the referenced context to answer this safely.",
+      summary: "The verified import summary is available, but this follow-up could not be resolved without recent conversation or selected application context.",
+    };
+    response.interpretation = response.finding.summary;
+    response.confidence = { level: "not_assessable", reasons: ["The semantic plan requires context that was not available for this request."] };
+    response.limitations.push("No topic-specific analyzer ran because the required conversation or selected application context was unavailable.");
+    return response;
+  }
+
+  const needsTradeReconstruction = selectedTools.some((key) => [
+    "analyze_trading_activity", "retrieve_patterns", "analyze_tail_risk", "analyze_overtrading", "analyze_disposition_effect", "retrieve_similar_scenarios",
+  ].includes(key)) || input.plan?.analysisDepth === "deep";
   if (summary.completedTrades === 0 && needsTradeReconstruction) {
     response.limitations.push("Completed trades cannot yet be reconstructed because opening inventory inside the imported Bitget history window is unknown.");
     response.limitations.push("Win rate, realized trade return, tail risk by trade, disposition effect, R multiple, and trade expectancy are not available.");
   }
+  if (input.plan?.requiresJoinedAnalysis) {
+    response.limitations.push("The selected deterministic tools provide separate descriptive views; they do not calculate a joined association or establish that any observation caused another.");
+  }
   if (!response.dataWindow.label) response.limitations.push("The completed import did not report a usable coverage window.");
 
-  const plan = toolPlan(input.mode, intent).filter((key) => key !== "get_import_summary");
+  const plan = selectedTools.filter((key) => key !== "get_import_summary");
   let activity: Activity | null = null;
   let marketMatched = 0;
 
@@ -714,9 +592,9 @@ export async function orchestrateAsk(input: AskOrchestrationInput): Promise<AskR
         addSource(response.sources, "Bitget fills", "Fee observations are taken from fills only.");
         const detail = [...fees.entries()].sort(([a], [b]) => a.localeCompare(b))
           .map(([coin, fee]) => `${formatUnits(fee.units)} ${coin} (${fee.observations} fill${fee.observations === 1 ? "" : "s"})`).join(" · ");
-        addMetric(metrics, "Known fill fees by coin", detail, "Fill fees only; not added to financial-record fees.");
+        addMetric(metrics, "Known fill fees by coin", detail, "Fill fees only; financial records are kept separate and no cross-source fee total is calculated.");
         addMetric(metrics, "Financial records reviewed", String(records.length), "Kept separate from fill-level fee observations.");
-        response.toolRuns.push(resultTool(key, "completed", `Known fill-level fees are reported by native coin. ${records.length} financial records were kept separate to prevent double-counting.`, ["Bitget fills", "Bitget financial records"], activity.fills.length));
+        response.toolRuns.push(resultTool(key, "completed", "Known fill-level fees are reported by native coin. No combined account-level cost total was calculated.", ["Bitget fills", "Bitget financial records"], activity.fills.length));
         continue;
       }
 
@@ -936,7 +814,7 @@ export async function orchestrateAsk(input: AskOrchestrationInput): Promise<AskR
       ? { level: "high", reasons: ["This value comes directly from the latest completed import summary."] }
       : confidenceFor(summary, activity, marketMatched);
   }
-  applyQuestionFocusedFinding(response, intent);
+  applyEvidenceFinding(response, requestedMetric);
   const evidenceToolCompleted = response.toolRuns.some((tool) => tool.status === "completed"
     && tool.key !== "get_import_summary" && tool.key !== "run_skeptic_check");
   if (answerKind !== "fact" && ((!activity && summary.fills === 0) || !evidenceToolCompleted)) {
@@ -950,11 +828,6 @@ export async function orchestrateAsk(input: AskOrchestrationInput): Promise<AskR
     response.interpretation = response.finding.summary;
   }
   return response;
-}
-
-/** The deterministic plan is exported so mode budgets remain testable. */
-export function planAskTools(question: string, mode: AskMode, history: string[] = []) {
-  return toolPlan(mode, classify(normalizeQuestion(question), history.map(normalizeQuestion)));
 }
 
 export function askDataFingerprintInput(summary: AskImportSummary, question: string, mode: AskMode, history: string[]) {

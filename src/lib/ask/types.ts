@@ -1,4 +1,4 @@
-export const ASK_ANALYSIS_VERSION = "ask-evidence-v3";
+export const ASK_ANALYSIS_VERSION = "ask-evidence-v18";
 
 export const askModes = ["scout", "analyst", "investigator"] as const;
 export type AskMode = (typeof askModes)[number];
@@ -91,7 +91,7 @@ export type AskReasoningPoint = {
 };
 
 export type AskQualitativeEvidence = {
-  kind: "memory" | "pattern";
+  kind: "memory" | "pattern" | "research" | "rule" | "context";
   label: string;
   statement: string;
   classification: string | null;
