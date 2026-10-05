@@ -233,7 +233,7 @@ class OpenAIResponsesProvider implements ReasoningProvider {
   }
 }
 
-const compatibleJsonInstruction = `Return only one JSON object with every field below. Do not wrap it in Markdown.
+const compatibleJsonInstruction = `Return only one complete JSON object with every field below. No Markdown fences or prose outside JSON.
 {
   "answerKind": "fact | analysis | investigation",
   "finding": { "headline": "string", "summary": "string" },
@@ -246,7 +246,7 @@ const compatibleJsonInstruction = `Return only one JSON object with every field 
   "suggestedFollowups": ["string"]
 }`;
 
-const compatiblePlanJsonInstruction = `Return only one JSON object with these required keys; no Markdown:
+const compatiblePlanJsonInstruction = `Return only one complete JSON object with these required keys; no Markdown fences or prose outside JSON:
 understoodQuestion: string;
 informationNeeds: nonempty string array;
 toolRequests: array of exact names from the supplied read-only catalog;
@@ -291,7 +291,7 @@ function groqAnswerResponseFormat(allowedEvidenceLabels: string[] = [], retry = 
             },
             required: ["kind", "statement", "rationale", "evidenceLabels", "test"], additionalProperties: false,
           },
-          maxItems: retry ? 0 : 4,
+          maxItems: retry ? 2 : 4,
         },
         evidenceLabels: { type: "array", items: evidenceLabelItem, maxItems: 12 },
         confidence: { type: "string", enum: ["low", "moderate", "high", "not_assessable"] },
@@ -307,23 +307,21 @@ function groqAnswerResponseFormat(allowedEvidenceLabels: string[] = [], retry = 
 }
 
 const groqCompletionBudget: Record<AskMode, number> = {
-  scout: 550,
-  analyst: 1_000,
-  investigator: 1_250,
+  scout: 2_000,
+  analyst: 2_500,
+  investigator: 3_000,
 };
 
-const GROQ_RETRY_COMPLETION_BUDGET = 600;
-const GROQ_PLAN_COMPLETION_BUDGET = 500;
+// Leave room for both GPT-OSS reasoning tokens and the complete JSON object.
+const GROQ_RETRY_COMPLETION_BUDGET = 2_500;
+const GROQ_PLAN_COMPLETION_BUDGET = 1_500;
 
 export function parseCompatibleJson(content: unknown) {
   if (typeof content !== "string" || !content.trim()) throw new ReasoningProviderError("INVALID_RESPONSE");
   const trimmed = content.trim();
-  const withoutFence = trimmed.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
-  const start = withoutFence.indexOf("{");
-  const end = withoutFence.lastIndexOf("}");
-  if (start < 0 || end <= start) throw new ReasoningProviderError("INVALID_RESPONSE");
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) throw new ReasoningProviderError("INVALID_RESPONSE");
   try {
-    return JSON.parse(withoutFence.slice(start, end + 1));
+    return JSON.parse(trimmed);
   } catch {
     throw new ReasoningProviderError("INVALID_RESPONSE");
   }
@@ -346,7 +344,7 @@ class OpenAICompatibleChatProvider implements ReasoningProvider {
       const client = new OpenAI({ apiKey: this.apiKey, baseURL: this.baseURL, timeout: 25_000, maxRetries: 0 });
       if (this.id === "groq") {
         const isRetry = Boolean(request.retryInstruction);
-        const providerInstructions = "Return RIKKU's evidence-grounded answer in the required strict JSON schema. Treat the supplied deterministic evidence and constraints as authoritative; never invent financial facts.";
+        const providerInstructions = `Return RIKKU's evidence-grounded answer in the required strict JSON schema. Treat the supplied deterministic evidence and constraints as authoritative; never invent financial facts. ${compatibleJsonInstruction} Keep all text concise: headline under 220 characters, summary under 900, interpretation under 1200, each statement under 500, rationale under 700, test under 500. Return a complete object, with no prose outside JSON.`;
         const result = await client.chat.completions.create({
           model: this.model,
           messages: [
@@ -358,6 +356,7 @@ class OpenAICompatibleChatProvider implements ReasoningProvider {
           temperature: 0.2,
           max_completion_tokens: isRetry ? GROQ_RETRY_COMPLETION_BUDGET : groqCompletionBudget[request.mode],
         });
+        if (result.choices[0]?.finish_reason !== "stop" || result.choices[0]?.message?.refusal) throw new ReasoningProviderError("INVALID_RESPONSE");
         return parseCompatibleJson(result.choices[0]?.message?.content);
       }
       const result = await client.chat.completions.create({
@@ -382,12 +381,9 @@ class OpenAICompatibleChatProvider implements ReasoningProvider {
         messages: this.id === "groq"
           ? [{ role: "user", content: `${plannerInstructions}\n\n${request.prompt}` }]
           : [{ role: "system", content: plannerInstructions }, { role: "user", content: request.prompt }],
-        // The GPT-OSS planner can intermittently reject a valid strict-schema
-        // generation before returning content. JSON object mode is more robust;
-        // validateSemanticToolPlan remains the independent strict, fail-closed
-        // schema and read-only allowlist boundary on every returned plan.
-        ...(this.id === "groq" ? { response_format: { type: "json_object" as const }, reasoning_effort: "low" as const, temperature: 0, max_completion_tokens: GROQ_PLAN_COMPLETION_BUDGET, include_reasoning: false } : {}),
+        ...(this.id === "groq" ? { response_format: { type: "json_schema" as const, json_schema: { name: "rikku_tool_plan", strict: true, schema: z.toJSONSchema(semanticPlanSchema) } }, reasoning_effort: "low" as const, temperature: 0, max_completion_tokens: GROQ_PLAN_COMPLETION_BUDGET, include_reasoning: false } : {}),
       });
+      if (result.choices[0]?.finish_reason !== "stop" || result.choices[0]?.message?.refusal) throw new ReasoningProviderError("INVALID_RESPONSE");
       return parseCompatibleJson(result.choices[0]?.message?.content);
     } catch (error) {
       throw normalizeReasoningProviderError(error);

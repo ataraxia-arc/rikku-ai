@@ -43,6 +43,32 @@ function modelOutput(overrides: Partial<ModelInterpretation> = {}): ModelInterpr
 }
 
 describe("OpenAI evidence interpretation", () => {
+  it("repairs invalid JSON once without dropping follow-up context or the semantic goal", async () => {
+    const callModel = vi.fn().mockRejectedValueOnce(new ReasoningProviderError("INVALID_RESPONSE")).mockResolvedValueOnce(modelOutput());
+    const response = await reasonAboutEvidence({
+      response: deterministic,
+      recent: [{ question: "Earlier fee question", conclusion: "The coverage remains bounded." }],
+      semanticPlan: { understoodQuestion: "Review the fee evidence", informationNeeds: ["Known fees"], reasoningGoal: "Consider another interpretation", referencedPriorFindingIds: [], requiresJoinedAnalysis: false },
+      callModel,
+    });
+    expect(response.reasoningStatus).toBe("external_llm");
+    expect(callModel).toHaveBeenCalledTimes(2);
+    const retry = callModel.mock.calls[1][0];
+    expect(retry.retryInstruction).toContain("PROVIDER_INVALID_JSON");
+    expect(retry.retryInstruction).toContain("Return only valid JSON matching the schema");
+    expect(retry.prompt).toContain("The coverage remains bounded.");
+    expect(retry.prompt).toContain("Consider another interpretation");
+    expect(retry.prompt).toContain("1.2 USDT");
+  });
+
+  it("sends exact unsupported-claim failures and paths to the single repair attempt", async () => {
+    const callModel = vi.fn().mockResolvedValueOnce(modelOutput({ interpretation: "The fee total is 9876 USDT." })).mockResolvedValueOnce(modelOutput());
+    await reasonAboutEvidence({ response: deterministic, callModel });
+    expect(callModel).toHaveBeenCalledTimes(2);
+    expect(callModel.mock.calls[1][0].retryInstruction).toContain("UNSUPPORTED_NUMERIC_CLAIM_PATH:interpretation");
+    expect(callModel.mock.calls[1][0].retryInstruction).toContain("Remove or rewrite the unsupported claims");
+  });
+
   it("maps Scout, Analyst, and Investigator to the required model and reasoning effort", () => {
     expect(ASK_MODEL_CONFIG.scout).toMatchObject({ model: "gpt-5.6-luna", effort: "low" });
     expect(ASK_MODEL_CONFIG.analyst).toMatchObject({ model: "gpt-5.6-terra", effort: "medium" });

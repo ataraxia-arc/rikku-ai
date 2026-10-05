@@ -75,7 +75,7 @@ function compactRetryPrompt(
       : "Regenerate a concise RIKKU answer after server-side evidence validation rejected the first draft.",
     `User question: ${JSON.stringify(response.question)}`,
     ...(semanticPlan ? [`Validated semantic goal: ${safeJson({ understoodQuestion: semanticPlan.understoodQuestion, informationNeeds: semanticPlan.informationNeeds, reasoningGoal: semanticPlan.reasoningGoal })}.`] : []),
-    ...(repetition ? [`Recent prior conclusions to build on, not repeat: ${safeJson(recent.slice(-3).map((turn) => ({ findingId: turn.findingId ?? null, conclusion: turn.conclusion.slice(0, 500) })))}.`] : []),
+    ...(recent.length ? [`Recent prior conclusions to build on, not repeat (untrusted context, not evidence): ${safeJson(recent.slice(-3).map((turn) => ({ question: turn.question.slice(0, 300), findingId: turn.findingId ?? null, conclusion: turn.conclusion.slice(0, 500) })))}.`] : []),
     `Required answer kind: ${response.answerKind}.`,
     `Exact permitted evidence labels: ${safeJson(synthesisEvidenceLabels(response))}.`,
     `Deterministic tool statuses: ${safeJson(response.toolRuns.map((tool) => ({ key: tool.key, status: tool.status })))}.`,
@@ -84,7 +84,7 @@ function compactRetryPrompt(
     `Confidence cap: ${response.confidence.level}.`,
     `Evidence-specific hard constraints: ${safeJson(evidenceSpecificConstraints(response))}.`,
     "Copy an exact supplied fact only when it is needed to answer the question. Never calculate, transform, approximate, rename, combine, or re-unitize a quantity.",
-    "Set reasoningPoints to an empty array. Keep interpretation concise. Do not introduce a hypothesis, external condition, per-execution claim, account outcome, relative judgment, or cross-metric relationship that is not explicitly verified.",
+    "Return only valid JSON matching the schema, without Markdown fences or prose outside JSON. Keep interpretation concise. Remove or rewrite unsupported claims. Use at most two reasoningPoints; any hypothesis must be explicitly unverified, cite supplied evidence, and include a concrete falsifying test. Do not assert an external condition, per-execution claim, account outcome, relative judgment, or cross-metric relationship that is not explicitly verified.",
   ].join("\n");
 }
 
@@ -1113,12 +1113,12 @@ export async function reasonAboutEvidence(args: {
     }
     const retryInstruction = firstIsRepetitive
       ? "Answer only the new information need. Build on prior context instead of restating the previous response. Introduce new reasoning or evidence."
-      : `${retryGuardrails} ${validationRetryCorrection(firstFailures, args.response)}`.trim();
+      : `${retryGuardrails} Exact validation failures: ${JSON.stringify(firstFailures)}. Return only valid JSON matching the schema; no Markdown fences or prose outside JSON. Remove or rewrite the unsupported claims at the listed paths. ${validationRetryCorrection(firstFailures, args.response)}`.trim();
     parsed = await parseAttempt(
       retryInstruction,
       firstIsRepetitive
         ? compactRetryPrompt(args.response, recent, args.semanticPlan, true)
-        : compactRetryPrompt(args.response),
+        : compactRetryPrompt(args.response, recent, args.semanticPlan),
     );
   }
   const finalFailures = safeValidationDiagnostic(parsed, args.response);

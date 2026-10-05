@@ -168,10 +168,11 @@ export async function planAskSemantically(input: SemanticPlannerInput): Promise<
     const errorCode = error && typeof error === "object" && "code" in error
       ? String((error as { code?: unknown }).code ?? "")
       : "";
-    if (errorCode !== "INVALID_RESPONSE") throw error;
+    if (errorCode !== "INVALID_RESPONSE" && !(error instanceof SemanticPlanError)) throw error;
+    const failures = error instanceof SemanticPlanError ? error.failurePaths : ["PROVIDER_INVALID_JSON"];
     const output = await callModel({
       mode: input.mode,
-      prompt: `${prompt}\n\nThe prior provider response was invalid. Return exactly one complete JSON plan that satisfies the supplied schema and uses only catalog tool names.`,
+      prompt: `${prompt}\n\nThe prior provider response was invalid. Validation failures: ${JSON.stringify(failures)}. Return only valid JSON matching the schema: exactly one complete plan, no Markdown fences or prose outside JSON. Use only catalog tool names and preserve the supplied context.`,
     });
     return validateSemanticToolPlan(output, input.mode, input.conversationContext);
   }

@@ -221,11 +221,19 @@ describe("semantic evidence planner", () => {
     await expect(planAskSemantically({ question: "Tell me what looks different lately", mode: "analyst", provider: groq })).resolves.toMatchObject(basePlan);
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
     expect(body.model).toBe("openai/gpt-oss-120b");
-    expect(body.response_format).toEqual({ type: "json_object" });
+    expect(body.response_format).toMatchObject({ type: "json_schema", json_schema: { name: "rikku_tool_plan", strict: true } });
     expect(body.messages[0].content).toContain("semantic read-only evidence planner");
     expect(body.messages[0].content).not.toContain("rikku_answer");
     expect(body.messages).toHaveLength(1);
     expect(body.messages[0].content).toContain("Tell me what looks different lately");
     expect(body.include_reasoning).toBe(false);
+  });
+
+  it("repairs a schema failure once with the exact failure path, then fails closed", async () => {
+    const callModel = vi.fn().mockResolvedValue({ ...basePlan, toolRequests: ["place_order"] });
+    await expect(planAskSemantically({ question: "analyze the market", mode: "analyst", provider: provider(basePlan), callModel })).rejects.toThrow("INVALID_SEMANTIC_PLAN");
+    expect(callModel).toHaveBeenCalledTimes(2);
+    expect(callModel.mock.calls[1][0].prompt).toContain("toolRequests.0:invalid_value");
+    expect(callModel.mock.calls[1][0].prompt).toContain("no Markdown fences or prose outside JSON");
   });
 });

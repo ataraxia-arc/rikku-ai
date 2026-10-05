@@ -47,9 +47,11 @@ describe("reasoning provider abstraction", () => {
     })).toThrowError(expect.objectContaining({ code: "NOT_CONFIGURED" }));
   });
 
-  it("parses plain or fenced compatibility JSON before RIKKU schema validation", () => {
+  it("accepts only a complete JSON object before RIKKU schema validation", () => {
     expect(parseCompatibleJson('{"answerKind":"analysis"}')).toEqual({ answerKind: "analysis" });
-    expect(parseCompatibleJson('```json\n{"answerKind":"fact"}\n```')).toEqual({ answerKind: "fact" });
+    for (const invalid of ['```json\n{"answerKind":"fact"}\n```', 'Here is the answer: {"answerKind":"fact"}', '{} trailing prose', '{}{}', '[{}]', 'null', '{"finding":']) {
+      expect(() => parseCompatibleJson(invalid)).toThrowError(expect.objectContaining({ code: "INVALID_RESPONSE" }));
+    }
     expect(() => parseCompatibleJson("not json")).toThrowError(expect.objectContaining({ code: "INVALID_RESPONSE" }));
   });
 
@@ -127,7 +129,7 @@ describe("reasoning provider abstraction", () => {
         suggestedFollowups: { maxItems: 3 },
       },
     });
-    expect(body.max_completion_tokens).toBe(1_000);
+    expect(body.max_completion_tokens).toBe(2_500);
     expect(body.reasoning_effort).toBe("low");
     expect(body.include_reasoning).toBe(false);
     expect(body.temperature).toBe(0.2);
@@ -141,12 +143,12 @@ describe("reasoning provider abstraction", () => {
       allowedEvidenceLabels: ["Fills imported"],
     })).resolves.toEqual(output);
     const retryBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
-    expect(retryBody.max_completion_tokens).toBe(600);
+    expect(retryBody.max_completion_tokens).toBe(2_500);
     expect(retryBody.reasoning_effort).toBe("low");
-    expect(retryBody.response_format.json_schema.schema.properties.reasoningPoints.maxItems).toBe(0);
+    expect(retryBody.response_format.json_schema.schema.properties.reasoningPoints.maxItems).toBe(2);
   });
 
-  it("uses Groq JSON-object compatibility mode before strict server-side plan validation", async () => {
+  it("uses Groq strict JSON schema before independent server-side plan validation", async () => {
     const output = {
       understoodQuestion: "Count verified fills", informationNeeds: ["fill count"], toolRequests: ["get_import_summary"],
       needsConversationContext: false, referencedPriorFindingIds: [], analysisDepth: "factual",
@@ -163,12 +165,21 @@ describe("reasoning provider abstraction", () => {
 
     await expect(provider.generateStructuredPlan({ mode: "analyst", prompt: "Count the fills" })).resolves.toEqual(output);
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
-    expect(body.response_format).toEqual({ type: "json_object" });
+    expect(body.response_format).toMatchObject({ type: "json_schema", json_schema: { name: "rikku_tool_plan", strict: true, schema: { additionalProperties: false } } });
     expect(body.reasoning_effort).toBe("low");
-    expect(body.max_completion_tokens).toBe(500);
+    expect(body.max_completion_tokens).toBe(1_500);
     expect(body.temperature).toBe(0);
     expect(body.messages[0].content).toContain("toolRequests: array of exact names");
     expect(body.messages[0].content).toContain("requestedImportMetric");
+  });
+
+  it.each(["length", "content_filter"])("rejects %s completions even if content looks like JSON", async (finishReason) => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ finish_reason: finishReason, message: { content: "{}" } }],
+    }), { status: 200, headers: { "content-type": "application/json" } })));
+    const provider = createReasoningProvider({ LLM_API_KEY: "test-key", LLM_BASE_URL: "https://api.groq.com/openai/v1", LLM_MODEL: "openai/gpt-oss-120b" });
+    await expect(provider.generateStructuredResponse({ mode: "analyst", prompt: "analyze the market" })).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+    await expect(provider.generateStructuredPlan({ mode: "analyst", prompt: "analyze the market" })).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
   });
 
   it.each([
