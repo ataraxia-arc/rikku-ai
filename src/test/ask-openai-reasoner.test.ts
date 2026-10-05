@@ -59,6 +59,8 @@ describe("OpenAI evidence interpretation", () => {
     expect(retry.prompt).toContain("The coverage remains bounded.");
     expect(retry.prompt).toContain("Consider another interpretation");
     expect(retry.prompt).toContain("1.2 USDT");
+    expect(retry.prompt).toBe(callModel.mock.calls[0][0].prompt);
+    expect(retry.allowedEvidenceLabels).toEqual(callModel.mock.calls[0][0].allowedEvidenceLabels);
   });
 
   it("sends exact unsupported-claim failures and paths to the single repair attempt", async () => {
@@ -67,6 +69,8 @@ describe("OpenAI evidence interpretation", () => {
     expect(callModel).toHaveBeenCalledTimes(2);
     expect(callModel.mock.calls[1][0].retryInstruction).toContain("UNSUPPORTED_NUMERIC_CLAIM_PATH:interpretation");
     expect(callModel.mock.calls[1][0].retryInstruction).toContain("Remove or rewrite the unsupported claims");
+    expect(callModel.mock.calls[1][0].retryInstruction).toContain("return empty reasoningPoints, confidenceReasons, limitations, and suggestedFollowups arrays");
+    expect(callModel.mock.calls[1][0].prompt).toBe(callModel.mock.calls[0][0].prompt);
   });
 
   it("maps Scout, Analyst, and Investigator to the required model and reasoning effort", () => {

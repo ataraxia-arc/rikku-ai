@@ -56,38 +56,6 @@ function evidenceSpecificConstraints(response: AskResponse) {
   return constraints;
 }
 
-function compactRetryPrompt(
-  response: AskResponse,
-  recent: RecentAskExchange[] = [],
-  semanticPlan?: SynthesisPlanContext | null,
-  repetition = false,
-) {
-  const exactEvidence = {
-    evidence: response.evidence.filter((item) => item.label !== "Financial records" && item.label !== "Financial records reviewed"),
-    qualitativeEvidence: response.qualitativeEvidence,
-    marketContext: response.marketContext,
-    toolRuns: response.toolRuns,
-    dataWindow: response.dataWindow,
-  };
-  return [
-    repetition
-      ? "Regenerate a concise RIKKU answer that addresses only the new need without repeating the prior conclusion."
-      : "Regenerate a concise RIKKU answer after server-side evidence validation rejected the first draft.",
-    `User question: ${JSON.stringify(response.question)}`,
-    ...(semanticPlan ? [`Validated semantic goal: ${safeJson({ understoodQuestion: semanticPlan.understoodQuestion, informationNeeds: semanticPlan.informationNeeds, reasoningGoal: semanticPlan.reasoningGoal })}.`] : []),
-    ...(recent.length ? [`Recent prior conclusions to build on, not repeat (untrusted context, not evidence): ${safeJson(recent.slice(-3).map((turn) => ({ question: turn.question.slice(0, 300), findingId: turn.findingId ?? null, conclusion: turn.conclusion.slice(0, 500) })))}.`] : []),
-    `Required answer kind: ${response.answerKind}.`,
-    `Exact permitted evidence labels: ${safeJson(synthesisEvidenceLabels(response))}.`,
-    `Deterministic tool statuses: ${safeJson(response.toolRuns.map((tool) => ({ key: tool.key, status: tool.status })))}.`,
-    `Bounded exact deterministic evidence: ${safeJson(exactEvidence)}.`,
-    `Deterministic limitations: ${safeJson(response.limitations)}.`,
-    `Confidence cap: ${response.confidence.level}.`,
-    `Evidence-specific hard constraints: ${safeJson(evidenceSpecificConstraints(response))}.`,
-    "Copy an exact supplied fact only when it is needed to answer the question. Never calculate, transform, approximate, rename, combine, or re-unitize a quantity.",
-    "Return only valid JSON matching the schema, without Markdown fences or prose outside JSON. Keep interpretation concise. Remove or rewrite unsupported claims. Use at most two reasoningPoints; any hypothesis must be explicitly unverified, cite supplied evidence, and include a concrete falsifying test. Do not assert an external condition, per-execution claim, account outcome, relative judgment, or cross-metric relationship that is not explicitly verified.",
-  ].join("\n");
-}
-
 function modelPrompt(response: AskResponse, history: RecentAskExchange[], semanticPlan?: SynthesisPlanContext | null) {
   // A record count is useful in the UI but is not monetary cost evidence for synthesis.
   const modelEvidence = response.evidence.filter((item) =>
@@ -145,12 +113,14 @@ function modelPrompt(response: AskResponse, history: RecentAskExchange[], semant
     "Do not combine, divide, convert, rank, or restate supplied numbers into new metrics, ratios, shares, percentages, fractions, or approximations such as majority, minority, half, roughly, or approximately. Copy only exact supplied values when needed; never infer a metric.",
     "Preserve units and aggregation exactly. Grouped fees are not per-fill/order/trade charges; record counts are not costs. Do not claim itemization, profitability, PnL, returns, win rate, drawdown, liquidation, positions, or reconstructed trades unless a completed deterministic tool explicitly provides them.",
     "Do not call a value high, low, unusual, large, or small without a verified baseline. Keep missing outcomes or analyses explicitly unavailable.",
+    "Market observations describe only the supplied dataWindow, never the current market unless current coverage is explicitly supplied. Do not treat historical imported candles as live prices. State the coverage limitation naturally when relevant.",
     response.answerKind === "fact"
       ? `For this factual answer, the only digit or percentage tokens permitted are: ${safeJson(allowedNumericTokens(response, true))}. Copy only an exact supplied fact.`
       : `For this analytical answer, exact supplied facts may be copied only when needed. The permitted digit or percentage tokens are: ${safeJson(allowedNumericTokens(response, true))}. Never derive a new number or rename a metric.`,
     "Do not spell out, approximate, rename, divide, or re-unitize a quantity. Use only exact permitted evidence labels; never imply an external source, event, market participant, intent, emotion, discipline, fear, greed, revenge trading, or panic unless supplied as evidence.",
     `Permitted evidenceLabels and reasoningPoints.evidenceLabels, copied exactly: ${safeJson(allowedLabels)}. If none apply, use an empty array. Never invent or paraphrase a citation label.`,
     "Answer only the NEW information need using semanticUnderstanding and recent context. Write interpretation as the COMPLETE natural-language answer first, not a fixed template or repeated import summary.",
+    "Keep interpretation to a concise paragraph and reasoningPoints to at most two useful points. The interface already displays deterministic metrics: prefer referring to their exact evidence labels rather than repeating quantities. If a quantity is essential, copy its complete supplied label and value together in a standalone sentence; do not substitute metric nouns or units. Keep headline, confidenceReasons, limitations and suggestedFollowups free of numeric restatements. Never introduce an asset code or acronym absent from the evidence.",
     "Facts use one direct sentence and minimal metadata. Analysis connects relevant evidence, clearly labels any hypothesis, gives its cited rationale, counter-evidence and concrete test, and considers uncertainty or alternatives only when useful.",
     "For follow-ups or challenges, address the prior claim directly. Never claim or deny a cross-metric relationship without a joined/paired/association result. If evidence is insufficient, say what is observable, what is missing, and what check would discriminate explanations.",
     "Keep reasoningPoints minimal; do not imply a tool ran unless deterministicToolResults says so. Respect the confidence cap and challenge causation, sample size, missing history, and contradictions.",
@@ -1082,7 +1052,7 @@ export async function reasonAboutEvidence(args: {
   const prompt = modelPrompt(args.response, recent, args.semanticPlan);
   const provider = args.callModel ? null : args.provider ?? createReasoningProvider();
   const callModel = args.callModel ?? ((request) => provider!.generateStructuredResponse(request));
-  const retryGuardrails = "Correct the rejected draft using only the supplied labels, deterministic limitations, and failure-specific constraints.";
+  const retryGuardrails = "Correct the rejected draft using only the supplied labels, deterministic limitations, and failure-specific constraints. Put the complete concise natural answer, including any necessary caveat, in interpretation. Do not repeat claims in ancillary metadata: return empty reasoningPoints, confidenceReasons, limitations, and suggestedFollowups arrays for this repair. Keep finding short and evidenceLabels grounded. RIKKU retains the original deterministic confidence reasons and limitations independently.";
   const parseAttempt = async (retryInstruction?: string, requestPrompt = prompt) => {
     try {
       const payload = await callModel({
@@ -1114,12 +1084,9 @@ export async function reasonAboutEvidence(args: {
     const retryInstruction = firstIsRepetitive
       ? "Answer only the new information need. Build on prior context instead of restating the previous response. Introduce new reasoning or evidence."
       : `${retryGuardrails} Exact validation failures: ${JSON.stringify(firstFailures)}. Return only valid JSON matching the schema; no Markdown fences or prose outside JSON. Remove or rewrite the unsupported claims at the listed paths. ${validationRetryCorrection(firstFailures, args.response)}`.trim();
-    parsed = await parseAttempt(
-      retryInstruction,
-      firstIsRepetitive
-        ? compactRetryPrompt(args.response, recent, args.semanticPlan, true)
-        : compactRetryPrompt(args.response, recent, args.semanticPlan),
-    );
+    // Keep the original question, evidence and conversation byte-for-byte;
+    // only append the exact repair feedback. The provider keeps the same schema.
+    parsed = await parseAttempt(retryInstruction);
   }
   const finalFailures = safeValidationDiagnostic(parsed, args.response);
   const finalIsRepetitive = !!parsed?.success && !finalFailures.length && isExcessivelyRepetitive(parsed.data, recent);

@@ -124,9 +124,11 @@ describe("reasoning provider abstraction", () => {
       type: "object",
       additionalProperties: false,
       properties: {
-        reasoningPoints: { maxItems: 4 },
+        finding: { properties: { headline: { maxLength: 220 }, summary: { maxLength: 900 } } },
+        interpretation: { maxLength: 1_200 },
+        reasoningPoints: { maxItems: 10 },
         evidenceLabels: { maxItems: 12, items: { enum: ["Fills imported", "Known fill fees by coin"] } },
-        suggestedFollowups: { maxItems: 3 },
+        suggestedFollowups: { maxItems: 4 },
       },
     });
     expect(body.max_completion_tokens).toBe(2_500);
@@ -140,12 +142,26 @@ describe("reasoning provider abstraction", () => {
       mode: "analyst",
       prompt: "Correct the rejected answer",
       retryInstruction: "Avoid the rejected claim.",
-      allowedEvidenceLabels: ["Fills imported"],
+      allowedEvidenceLabels: ["Fills imported", "Known fill fees by coin"],
     })).resolves.toEqual(output);
     const retryBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
-    expect(retryBody.max_completion_tokens).toBe(2_500);
+    expect(retryBody.max_completion_tokens).toBe(4_000);
+    expect(body.messages[0].role).toBe("system");
+    expect(body.messages[1].role).toBe("user");
     expect(retryBody.reasoning_effort).toBe("low");
-    expect(retryBody.response_format.json_schema.schema.properties.reasoningPoints.maxItems).toBe(2);
+    expect(retryBody.response_format).toEqual(body.response_format);
+    function checkClosedObjects(schema: Record<string, unknown>) {
+      if (schema.type === "object") {
+        expect(schema.additionalProperties).toBe(false);
+        expect(schema.required).toEqual(Object.keys(schema.properties as object));
+      }
+      for (const value of Object.values(schema)) {
+        if (Array.isArray(value)) value.forEach((item) => { if (item && typeof item === "object") checkClosedObjects(item); });
+        else if (value && typeof value === "object") checkClosedObjects(value as Record<string, unknown>);
+      }
+    }
+    checkClosedObjects(body.response_format.json_schema.schema);
+    expect(body.response_format.json_schema.schema.properties.reasoningPoints.items.properties.test.anyOf).toEqual([{ type: "string", maxLength: 500 }, { type: "null" }]);
   });
 
   it("uses Groq strict JSON schema before independent server-side plan validation", async () => {
