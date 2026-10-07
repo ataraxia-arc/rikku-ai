@@ -145,7 +145,7 @@ export function validateSemanticToolPlan(output: unknown, mode: AskMode, context
 
   const selected = [...new Set(plan.toolRequests)];
   const evidenceTools = selected.filter((key) => key !== "get_import_summary" && key !== "run_skeptic_check");
-  if (plan.answerKind !== "fact" && !evidenceTools.length) throw new SemanticPlanError();
+  if (plan.answerKind !== "fact" && !evidenceTools.length) throw new SemanticPlanError(["toolRequests:analysis_requires_evidence_tool"]);
   const withoutSummary = selected.filter((key) => key !== "get_import_summary");
   const toolRequests = ["get_import_summary", ...withoutSummary].slice(0, ASK_TOOL_BUDGETS[mode]) as AskToolKey[];
   return { ...plan, toolRequests };
@@ -172,7 +172,7 @@ export async function planAskSemantically(input: SemanticPlannerInput): Promise<
     const failures = error instanceof SemanticPlanError ? error.failurePaths : ["PROVIDER_INVALID_JSON"];
     const output = await callModel({
       mode: input.mode,
-      prompt: `${prompt}\n\nThe prior provider response was invalid. Validation failures: ${JSON.stringify(failures)}. Return only valid JSON matching the schema: exactly one complete plan, no Markdown fences or prose outside JSON. Use only catalog tool names and preserve the supplied context.`,
+      prompt: `${prompt}\n\nThe prior provider response was invalid. Validation failures: ${JSON.stringify(failures)}. Return only valid JSON matching the schema: exactly one complete plan, no Markdown fences or prose outside JSON. Use only catalog tool names and preserve the supplied context. Every analytical or investigation plan requires at least one relevant evidence tool OTHER THAN get_import_summary and run_skeptic_check, including follow-ups; select the tools needed to examine the prior point.`,
     });
     return validateSemanticToolPlan(output, input.mode, input.conversationContext);
   }

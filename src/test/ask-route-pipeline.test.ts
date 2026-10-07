@@ -192,6 +192,14 @@ function focusedActivityPlan() {
   };
 }
 
+function evidenceId(request: ReasoningProviderRequest, label: string) {
+  const prompt = JSON.parse(request.prompt) as { evidence: Array<{ id: string; label: string }> };
+  const entry = prompt.evidence.find((item) => item.label === label);
+  expect(entry, `Selected evidence must be supplied to synthesis: ${label}`).toBeDefined();
+  expect(request.allowedEvidenceIds).toContain(entry!.id);
+  return entry!.id;
+}
+
 describe("POST /api/ask semantic reasoning pipeline", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -222,41 +230,15 @@ describe("POST /api/ask semantic reasoning pipeline", () => {
       requestedImportMetric: null,
     };
     const synthesis = {
-      answerKind: "analysis",
-      finding: {
-        headline: "Known fill fees are available by native coin.",
-        summary: "The verified total is limited to observed fill-level fees.",
-      },
-      interpretation: "The known total covers observed fill fees in the imported window and does not establish complete account costs.",
-      reasoningPoints: [
-        {
-          kind: "observation",
-          statement: "Known fill fees are reported separately.",
-          rationale: "This avoids combining unproven overlapping records.",
-          evidenceLabels: ["Known fill fees by coin"],
-          test: null,
-        },
-        {
-          kind: "uncertainty",
-          statement: "The total does not establish complete account costs.",
-          rationale: "Financial records were reviewed separately.",
-          evidenceLabels: ["Known fill fees by coin"],
-          test: "Reconcile fee records against fills.",
-        },
-      ],
-      evidenceLabels: ["Known fill fees by coin"],
-      confidence: "low",
-      confidenceReasons: ["The evidence is limited to the imported window."],
-      limitations: ["Financial records were reviewed separately."],
-      suggestedFollowups: ["Which instruments contributed to the observed fee total?"],
+      answer: "The known total covers observed fill fees in the imported window and does not establish complete account costs.",
+      uncertainty: "Financial records were reviewed separately.",
     };
     const generateStructuredPlan = vi.fn(async (request: ReasoningProviderPlanRequest) => {
       void request;
       return plan;
     });
     const generateStructuredResponse = vi.fn(async (request: ReasoningProviderRequest) => {
-      void request;
-      return synthesis;
+      return { ...synthesis, evidenceIds: [evidenceId(request, "Known fill fees by coin")] };
     });
     boundaries.createReasoningProvider.mockReturnValue({
       id: "groq",
@@ -294,11 +276,13 @@ describe("POST /api/ask semantic reasoning pipeline", () => {
     const synthesisPrompt = generateStructuredResponse.mock.calls[0][0].prompt;
     expect(planningPrompt).toContain("analyze_fees");
     expect(synthesisPrompt).toContain("Known fill fees by coin");
-    expect(synthesisPrompt).toContain("calculatedMetrics");
+    expect(JSON.parse(synthesisPrompt).evidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: expect.stringMatching(/^E[1-9]\d*$/), label: "Known fill fees by coin" }),
+    ]));
     expect(synthesisPrompt).toContain("analyze_fees");
 
     expect(body.response).toMatchObject({
-      finding: { headline: synthesis.finding.headline },
+      interpretation: expect.stringContaining(synthesis.answer),
       reasoningStatus: "external_llm",
       reasoningProvider: { id: "groq", model: "synthetic-reasoner" },
     });
@@ -356,23 +340,10 @@ describe("POST /api/ask semantic reasoning pipeline", () => {
       };
     });
     const generateStructuredResponse = vi.fn(async (request: ReasoningProviderRequest) => {
-      void request;
       return {
-        answerKind: "analysis",
-        finding: { headline: "The prior conclusion remains bounded.", summary: "It describes only the imported window." },
-        interpretation: "The selected analysis does not establish a persistent trait.",
-        reasoningPoints: [{
-          kind: "counter_evidence",
-          statement: "The import window is incomplete.",
-          rationale: "A partial window can overstate concentration.",
-          evidenceLabels: ["Selected latest validated RIKKU analysis"],
-          test: "Compare a longer import window.",
-        }],
-        evidenceLabels: ["Selected latest validated RIKKU analysis"],
-        confidence: "low",
-        confidenceReasons: ["The selected analysis is bounded."],
-        limitations: ["The import window is incomplete."],
-        suggestedFollowups: [],
+        answer: "The selected analysis does not establish a persistent trait. A partial window can overstate concentration; compare a longer import window.",
+        evidenceIds: [evidenceId(request, "Selected latest validated RIKKU analysis")],
+        uncertainty: "The import window is incomplete.",
       };
     });
     boundaries.createReasoningProvider.mockReturnValue({

@@ -42,9 +42,18 @@ function modelOutput(overrides: Partial<ModelInterpretation> = {}): ModelInterpr
   };
 }
 
+function synthesisOutput(overrides: Partial<{ answer: string; evidenceIds: string[]; uncertainty: string | null }> = {}) {
+  return {
+    answer: "The known total covers fill-level fees in the imported window only.",
+    evidenceIds: ["E1"],
+    uncertainty: null,
+    ...overrides,
+  };
+}
+
 describe("OpenAI evidence interpretation", () => {
   it("repairs invalid JSON once without dropping follow-up context or the semantic goal", async () => {
-    const callModel = vi.fn().mockRejectedValueOnce(new ReasoningProviderError("INVALID_RESPONSE")).mockResolvedValueOnce(modelOutput());
+    const callModel = vi.fn().mockRejectedValueOnce(new ReasoningProviderError("INVALID_RESPONSE")).mockResolvedValueOnce(synthesisOutput());
     const response = await reasonAboutEvidence({
       response: deterministic,
       recent: [{ question: "Earlier fee question", conclusion: "The coverage remains bounded." }],
@@ -55,22 +64,33 @@ describe("OpenAI evidence interpretation", () => {
     expect(callModel).toHaveBeenCalledTimes(2);
     const retry = callModel.mock.calls[1][0];
     expect(retry.retryInstruction).toContain("PROVIDER_INVALID_JSON");
-    expect(retry.retryInstruction).toContain("Return only valid JSON matching the schema");
+    expect(retry.retryInstruction).toMatch(/(?:valid (?:JSON|output)|matching the schema)/i);
     expect(retry.prompt).toContain("The coverage remains bounded.");
     expect(retry.prompt).toContain("Consider another interpretation");
     expect(retry.prompt).toContain("1.2 USDT");
     expect(retry.prompt).toBe(callModel.mock.calls[0][0].prompt);
-    expect(retry.allowedEvidenceLabels).toEqual(callModel.mock.calls[0][0].allowedEvidenceLabels);
+    expect(retry.allowedEvidenceIds).toEqual(callModel.mock.calls[0][0].allowedEvidenceIds);
   });
 
   it("sends exact unsupported-claim failures and paths to the single repair attempt", async () => {
-    const callModel = vi.fn().mockResolvedValueOnce(modelOutput({ interpretation: "The fee total is 9876 USDT." })).mockResolvedValueOnce(modelOutput());
-    await reasonAboutEvidence({ response: deterministic, callModel });
+    const rejectedDraft = synthesisOutput({ answer: "The fee total is 9876 USDT." });
+    const recent = [{ question: "What makes that total uncertain?", conclusion: "Only verified fill fees are available." }];
+    const callModel = vi.fn().mockResolvedValueOnce(rejectedDraft).mockResolvedValueOnce(synthesisOutput());
+    await reasonAboutEvidence({ response: deterministic, recent, callModel });
     expect(callModel).toHaveBeenCalledTimes(2);
-    expect(callModel.mock.calls[1][0].retryInstruction).toContain("UNSUPPORTED_NUMERIC_CLAIM_PATH:interpretation");
-    expect(callModel.mock.calls[1][0].retryInstruction).toContain("Remove or rewrite the unsupported claims");
-    expect(callModel.mock.calls[1][0].retryInstruction).toContain("return empty reasoningPoints, confidenceReasons, limitations, and suggestedFollowups arrays");
-    expect(callModel.mock.calls[1][0].prompt).toBe(callModel.mock.calls[0][0].prompt);
+    const initial = callModel.mock.calls[0][0];
+    const repair = callModel.mock.calls[1][0];
+    expect(repair.retryInstruction).toContain("UNSUPPORTED_NUMERIC_CLAIM_PATH:interpretation");
+    expect(repair.retryInstruction).toContain(`Rejected draft: ${JSON.stringify(rejectedDraft)}`);
+    expect(repair.retryInstruction).toMatch(/rewrite/i);
+    expect(repair.retryInstruction).toMatch(/(?:only|supplied evidence)/i);
+    expect(repair.prompt).toBe(initial.prompt);
+    expect(repair.allowedEvidenceIds).toEqual(initial.allowedEvidenceIds);
+    const originalEvidencePackage = JSON.parse(initial.prompt);
+    expect(JSON.parse(repair.prompt)).toEqual(originalEvidencePackage);
+    expect(originalEvidencePackage.userQuestion).toBe(deterministic.question);
+    expect(originalEvidencePackage.recentConversationContext).toEqual(recent);
+    expect(originalEvidencePackage.evidence).toContainEqual({ ...deterministic.evidence[0], id: "E1" });
   });
 
   it("maps Scout, Analyst, and Investigator to the required model and reasoning effort", () => {
@@ -80,69 +100,54 @@ describe("OpenAI evidence interpretation", () => {
   });
 
   it("uses only allowlisted deterministic evidence and never raises deterministic confidence", async () => {
-    const result = await reasonAboutEvidence({ response: deterministic, callModel: vi.fn(async () => modelOutput()) });
+    const result = await reasonAboutEvidence({ response: deterministic, callModel: vi.fn(async () => synthesisOutput()) });
     expect(result.reasoningStatus).toBe("external_llm");
     expect(result.evidence).toEqual(deterministic.evidence);
     expect(result.confidence.level).toBe("low");
-    expect(result.reasoningPoints).toHaveLength(2);
-    expect(result.suggestedFollowups).toEqual(["Which symbols generated these fees?"]);
+    expect(result.reasoningPoints).toEqual([]);
+    expect(result.finding).toEqual(deterministic.finding);
+    expect(result.interpretation).toBe(synthesisOutput().answer);
+    expect(result.suggestedFollowups).toEqual(deterministic.suggestedFollowups);
   });
 
   it("preserves deterministic Skeptic reasons and limitations when adding model commentary", async () => {
-    const output = modelOutput({
-      confidenceReasons: ["The model adds a bounded caveat.", "[verified quantity] observations were reviewed."],
-      limitations: ["A later import may change the interpretation.", "The [verified value] is hidden."],
-      suggestedFollowups: ["Review [verified quantity] next."],
-    });
+    const output = synthesisOutput({ uncertainty: "A later import may change the interpretation." });
     const result = await reasonAboutEvidence({ response: deterministic, callModel: vi.fn(async () => output) });
 
-    expect(result.confidence.reasons).toEqual(expect.arrayContaining(["12 fills are available.", "The model adds a bounded caveat."]));
+    expect(result.confidence.reasons).toEqual(deterministic.confidence.reasons);
     expect(result.limitations).toEqual(expect.arrayContaining(["Financial records were kept separate.", "A later import may change the interpretation."]));
     expect(JSON.stringify(result)).not.toMatch(/\[verified (?:value|quantity)\]/i);
   });
 
   it("rejects invented citations and accepts one grounded regeneration", async () => {
-    const output = modelOutput({
-      evidenceLabels: ["Invented evidence", "Known fill fees by coin"],
-      reasoningPoints: [
-        { kind: "observation", statement: "Known fill fees are reported separately.", rationale: "The verified metric is descriptive.", evidenceLabels: ["Invented evidence", "Known fill fees by coin"], test: null },
-        { kind: "uncertainty", statement: "The total does not establish complete account costs.", rationale: "Financial records were kept separate.", evidenceLabels: ["Invented evidence"], test: "Reconcile fee records against fills." },
-      ],
-    });
+    const output = synthesisOutput({ evidenceIds: ["E999", "E1"] });
 
-    const callModel = vi.fn().mockResolvedValueOnce(output).mockResolvedValueOnce(modelOutput());
+    const callModel = vi.fn().mockResolvedValueOnce(output).mockResolvedValueOnce(synthesisOutput());
     const result = await reasonAboutEvidence({ response: deterministic, callModel });
 
     expect(callModel).toHaveBeenCalledTimes(2);
-    expect(callModel.mock.calls[1][0].retryInstruction).toContain("Cite only exact labels");
-    expect(result.reasoningPoints[0].evidenceLabels).toEqual(["Known fill fees by coin"]);
+    expect(callModel.mock.calls[1][0].retryInstruction).toMatch(/UNKNOWN_EVIDENCE|evidenceIds/i);
+    expect(result.interpretation).toBe(synthesisOutput().answer);
     expect(result.evidence).toEqual(deterministic.evidence);
   });
 
-  it("bounds provider citation arrays and strips extra structural keys before strict validation", async () => {
-    const output = modelOutput();
+  it("rejects overlong citation arrays and extra keys rather than silently dropping output", async () => {
+    const output = synthesisOutput();
     const overflow = {
       ...output,
       ignoredTopLevelKey: "not part of the contract",
-      finding: { ...output.finding, ignoredFindingKey: "not part of the contract" },
-      evidenceLabels: Array.from({ length: 20 }, () => "Known fill fees by coin"),
-      reasoningPoints: output.reasoningPoints.map((point) => ({
-        ...point,
-        ignoredPointKey: "not part of the contract",
-        evidenceLabels: Array.from({ length: 20 }, () => "Known fill fees by coin"),
-      })),
+      evidenceIds: Array.from({ length: 20 }, () => "E1"),
     };
 
-    const result = await reasonAboutEvidence({ response: deterministic, callModel: vi.fn(async () => overflow) });
-
-    expect(result.reasoningStatus).toBe("external_llm");
-    expect(result.reasoningPoints.every((point) => point.evidenceLabels.length <= 8)).toBe(true);
+    const callModel = vi.fn(async () => overflow);
+    await expect(reasonAboutEvidence({ response: deterministic, callModel })).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+    expect(callModel).toHaveBeenCalledTimes(2);
   });
 
   it("builds a focused structured evidence package with conversation context", async () => {
     const callModel = vi.fn(async (args: { mode: "scout" | "analyst" | "investigator"; prompt: string; retryInstruction?: string }) => {
       void args;
-      return modelOutput();
+      return synthesisOutput();
     });
     await reasonAboutEvidence({
       response: deterministic,
@@ -152,14 +157,10 @@ describe("OpenAI evidence interpretation", () => {
     const prompt = callModel.mock.calls[0][0].prompt;
     expect(prompt).toContain('"userQuestion":"How much did I pay in known fees?"');
     expect(prompt).toContain('"recentConversationContext"');
-    expect(prompt).toContain('"calculatedMetrics":[{"label":"Known fill fees by coin"');
-    expect(prompt).toContain('"deterministicToolResults":[{"key":"analyze_fees"');
-    expect(prompt).toContain("COMPLETE natural-language answer");
-    expect(prompt).toContain("exact supplied facts may be copied only when needed");
-    expect(prompt).toContain("Do not combine, divide, convert, rank, or restate supplied numbers");
-    expect(prompt).toContain("majority, minority, half, roughly, or approximately");
+    expect(prompt).toContain('"label":"Known fill fees by coin"');
+    expect(prompt).toContain('"id":"E1"');
+    expect(prompt).toContain('"key":"analyze_fees"');
     expect(prompt).toContain('"value":"1.2 USDT"');
-    expect(prompt).toContain('"sampleSize":12');
     expect(prompt).toContain('"start":"2026-07-08T00:00:00.000Z"');
     expect(prompt).toContain('"summary":"1.2 USDT"');
     expect(prompt).not.toContain('"orders"');
@@ -168,7 +169,7 @@ describe("OpenAI evidence interpretation", () => {
   it("hands the validated semantic meaning and referenced prior finding to synthesis", async () => {
     const callModel = vi.fn(async (args: { mode: "scout" | "analyst" | "investigator"; prompt: string; retryInstruction?: string }) => {
       void args;
-      return modelOutput();
+      return synthesisOutput();
     });
     await reasonAboutEvidence({
       response: deterministic,
@@ -198,7 +199,7 @@ describe("OpenAI evidence interpretation", () => {
     };
     const callModel = vi.fn(async (args: { mode: "scout" | "analyst" | "investigator"; prompt: string; retryInstruction?: string }) => {
       void args;
-      return modelOutput();
+      return synthesisOutput();
     });
     const answer = await reasonAboutEvidence({ response, callModel });
     const prompt = callModel.mock.calls[0][0].prompt;
@@ -209,107 +210,85 @@ describe("OpenAI evidence interpretation", () => {
   });
 
   it("regenerates unsupported numeric claims instead of silently editing them", async () => {
-    const invalid = modelOutput({ interpretation: "The imported activity covers a derived 27-day window." });
-    const callModel = vi.fn().mockResolvedValueOnce(invalid).mockResolvedValueOnce(modelOutput());
+    const invalid = synthesisOutput({ answer: "The imported activity covers a derived 27-day window." });
+    const callModel = vi.fn().mockResolvedValueOnce(invalid).mockResolvedValueOnce(synthesisOutput());
 
     const result = await reasonAboutEvidence({ response: deterministic, callModel });
 
     expect(result.reasoningStatus).toBe("external_llm");
     expect(callModel).toHaveBeenCalledTimes(2);
-    expect(result.interpretation).toBe(modelOutput().interpretation);
+    expect(result.interpretation).toBe(synthesisOutput().answer);
     expect(result.interpretation).not.toContain("27");
   });
 
   it("regenerates unsupported behavioral reasoning instead of silently inserting uncertainty", async () => {
-    const invalid = modelOutput({
-      interpretation: "One explanation could be fear.",
-      reasoningPoints: [
-        { kind: "hypothesis", statement: "Fear may explain it.", rationale: "This is a guess.", evidenceLabels: ["Known fill fees by coin"], test: "Compare later activity." },
-      ],
-    });
+    const invalid = synthesisOutput({ answer: "One explanation could be fear." });
     const callModel = vi.fn()
       .mockResolvedValueOnce(invalid)
-      .mockResolvedValueOnce(modelOutput());
+      .mockResolvedValueOnce(synthesisOutput());
 
     const result = await reasonAboutEvidence({ response: deterministic, callModel });
 
     expect(result.reasoningStatus).toBe("external_llm");
-    expect(result.interpretation).toBe(modelOutput().interpretation);
-    expect(result.reasoningPoints).toHaveLength(2);
+    expect(result.interpretation).toBe(synthesisOutput().answer);
+    expect(result.reasoningPoints).toEqual([]);
     expect(callModel).toHaveBeenCalledTimes(2);
   });
 
   it("carries the exact five-turn acceptance conversation forward without restarting it", async () => {
-    const turns: Array<{ question: string; points: ModelInterpretation["reasoningPoints"] }> = [
-      { question: "What do you notice about my recent trading?", points: [
-        { kind: "observation", statement: "The strongest observable signal is concentrated recent activity.", rationale: "The verified activity evidence points in the same direction.", evidenceLabels: ["Known fill fees by coin"], test: null },
-        { kind: "hypothesis", statement: "The observed concentration may be specific to this import window.", rationale: "The bounded evidence describes this window but cannot establish persistence.", evidenceLabels: ["Known fill fees by coin"], test: "Compare the same metric across later imports." },
-        { kind: "uncertainty", statement: "This does not establish a persistent behavioral pattern.", rationale: "The evidence window remains limited.", evidenceLabels: [], test: "Compare future imports." },
-      ] },
-      { question: "Why?", points: [
-        { kind: "observation", statement: "That interpretation follows from the evidence relationship, not an assumed motive.", rationale: "The verified metric is descriptive only.", evidenceLabels: ["Known fill fees by coin"], test: null },
-        { kind: "uncertainty", statement: "The cause remains unresolved.", rationale: "Context outside the import is missing.", evidenceLabels: [], test: "Add broader history." },
-      ] },
-      { question: "Could there be another explanation?", points: [
-        { kind: "observation", statement: "The observed concentration remains real within the imported window.", rationale: "It is present in verified evidence.", evidenceLabels: ["Known fill fees by coin"], test: null },
-        { kind: "alternative", statement: "A short-lived market condition could produce the same observation.", rationale: "Market context can affect activity without implying stable behavior.", evidenceLabels: [], test: "Compare across regimes." },
-      ] },
-      { question: "What evidence goes against that?", points: [
-        { kind: "observation", statement: "The earlier observation is descriptive rather than causal.", rationale: "It identifies association only.", evidenceLabels: ["Known fill fees by coin"], test: null },
-        { kind: "counter_evidence", statement: "Missing completed-trade history weakens any persistent-pattern claim.", rationale: "The current record cannot separate temporary conditions from repeat behavior.", evidenceLabels: [], test: "Reconstruct later trades." },
-      ] },
-      { question: "What would you investigate next?", points: [
-        { kind: "observation", statement: "The unresolved issue is whether the signal survives changing conditions.", rationale: "The current evidence cannot answer that.", evidenceLabels: ["Known fill fees by coin"], test: null },
-        { kind: "next_investigation", statement: "Compare the same activity relationship across market regimes and later imports.", rationale: "That test directly targets stability and confounding.", evidenceLabels: [], test: "Run a regime-stratified comparison when more data arrives." },
-      ] },
+    const turns = [
+      { question: "how many fills do i got", answer: "You currently have 12 imported fills." },
+      { question: "anything stand out about how ive been trading lately?", answer: "The known fill fees are grouped by native coin. They describe this imported window, not complete account costs." },
+      { question: "could there be another explanation?", answer: "An alternative is that this observation is specific to the imported window, rather than persistent. Compare later imports before generalizing it." },
+      { question: "what evidence makes that idea weaker?", answer: "The fee evidence remains descriptive. Financial records were kept separate, so the evidence does not establish complete account costs." },
+      { question: "what can you not tell from my data?", answer: "I cannot determine profitability, win rate, or cost basis from this evidence. The records do not establish the reasons for the observed activity." },
     ];
-    const headlines = ["Initial observation", "Reasoning basis", "Alternative explanation", "Counter-evidence", "Next investigation"];
     const recent: Array<{ question: string; conclusion: string }> = [];
     for (const [index, turn] of turns.entries()) {
-      const turnResponse: AskResponse = { ...deterministic, question: turn.question };
-      const output = modelOutput({
-        finding: { headline: `${headlines[index]} addresses only the current question.`, summary: turn.points[0].statement },
-        interpretation: turn.points.map((point) => point.statement).join(" "),
-        reasoningPoints: turn.points,
-      });
-      expect(modelReasoningValidationFailures(output, turnResponse), turn.question).toEqual([]);
+      const turnResponse: AskResponse = {
+        ...deterministic,
+        question: turn.question,
+        ...(index === 0 ? { answerKind: "fact" as const, evidence: [{ label: "Fills imported", value: "12" }] } : {}),
+      };
+      const output = synthesisOutput({ answer: turn.answer });
       const callModel = vi.fn(async (args: { mode: "scout" | "analyst" | "investigator"; prompt: string; retryInstruction?: string }) => {
-        if (recent.length) expect(args.prompt).toContain(recent.at(-1)!.question);
+        if (recent.length) {
+          expect(args.prompt).toContain(recent.at(-1)!.question);
+          expect(args.prompt).toContain(turns[index - 1].answer);
+        }
         return output;
       });
       const result = await reasonAboutEvidence({ response: turnResponse, recent, callModel });
       expect(callModel).toHaveBeenCalledTimes(1);
       expect(result.reasoningStatus).toBe("external_llm");
-      recent.push({ question: turn.question, conclusion: `${result.finding.headline} ${result.interpretation}` });
+      expect(result.interpretation).toBe(turn.answer);
+      expect(result.reasoningPoints).toEqual([]);
+      expect(result.interpretation).not.toContain('"evidenceIds"');
+      recent.push({ question: turn.question, conclusion: `${result.finding.headline} ${result.finding.summary} ${result.interpretation}` });
       if (recent.length > 5) recent.shift();
     }
   });
 
   it("does not force a canned hypothesis or point kind for unseen wording", async () => {
     const response: AskResponse = { ...deterministic, question: "Could this bill just be the market being noisy?" };
-    const output = modelOutput({
-      interpretation: "The known fees establish cost, not its cause. Market context might matter, but the current fee evidence cannot separate that explanation from execution choices.",
-      reasoningPoints: [],
+    const output = synthesisOutput({
+      answer: "The known fees establish cost, not its cause. Market context might matter, but the current fee evidence cannot separate that explanation from execution choices.",
     });
-    expect(modelReasoningValidationFailures(output, response)).toEqual([]);
     const result = await reasonAboutEvidence({ response, callModel: vi.fn(async () => output) });
 
-    expect(result.interpretation).toBe(output.interpretation);
+    expect(result.interpretation).toBe(output.answer);
     expect(result.reasoningPoints).toEqual([]);
   });
 
-  it("rejects incomplete hypotheses and accepts only a corrected provider answer", async () => {
-    const invalid = modelOutput({ reasoningPoints: [
-      { kind: "hypothesis", statement: "The pattern may persist.", rationale: "", evidenceLabels: [], test: null },
-    ] });
-    const corrected = modelOutput({ reasoningPoints: [
-      { kind: "hypothesis", statement: "The observed cost pattern may persist.", rationale: "The current fee metric describes this window, not a future one.", evidenceLabels: ["Known fill fees by coin"], test: "Compare the same fee metric across later imports." },
-    ] });
+  it("requires a grounded evidence citation and accepts only a corrected provider answer", async () => {
+    const invalid = synthesisOutput({ evidenceIds: [] });
+    const corrected = synthesisOutput();
     const callModel = vi.fn().mockResolvedValueOnce(invalid).mockResolvedValueOnce(corrected);
     const result = await reasonAboutEvidence({ response: deterministic, callModel });
 
     expect(callModel).toHaveBeenCalledTimes(2);
-    expect(result.reasoningPoints).toEqual(corrected.reasoningPoints);
+    expect(result.interpretation).toBe(corrected.answer);
+    expect(callModel.mock.calls[1][0].retryInstruction).toContain("ANALYSIS_UNGROUNDED");
   });
 
   it("fails post-reasoning validation for unknown evidence, incomplete hypotheses, or unsupported behavioral claims", () => {
@@ -483,6 +462,17 @@ describe("OpenAI evidence interpretation", () => {
     expect(validateModelReasoning(modelOutput({ confidenceReasons: ["Glassnode metrics indicate the same pattern."] }), deterministic)).toBe(false);
   });
 
+  it("distinguishes the bounded account-data subject from invented external sources without accepting unsupported facts", () => {
+    for (const verb of ["show", "indicate", "suggest"]) {
+      expect(validateModelReasoning(modelOutput({ interpretation: `Your recent data ${verb} known fill fees of 1.2 USDT.` }), deterministic)).toBe(true);
+      expect(validateModelReasoning(modelOutput({ interpretation: `Your recent data ${verb} known fill fees of 99 USDT.` }), deterministic)).toBe(false);
+    }
+    expect(validateModelReasoning(modelOutput({ interpretation: "Reuters data show known fill fees of 1.2 USDT." }), deterministic)).toBe(false);
+    expect(validateModelReasoning(modelOutput({ interpretation: "Your Reuters data show known fill fees of 1.2 USDT." }), deterministic)).toBe(false);
+    expect(validateModelReasoning(modelOutput({ interpretation: "Recent research confirms known fill fees of 1.2 USDT." }), deterministic)).toBe(false);
+    expect(validateModelReasoning(modelOutput({ interpretation: "Your recent data show known fill fees of 1.2 USDT. Reuters confirms the interpretation." }), deterministic)).toBe(false);
+  });
+
   it("rejects categorical contradictions and values absent from deterministic evidence", () => {
     expect(validateModelReasoning(modelOutput({ interpretation: "Known fill fees are denominated in BTC." }), deterministic)).toBe(false);
 
@@ -500,6 +490,11 @@ describe("OpenAI evidence interpretation", () => {
     expect(validateModelReasoning(modelOutput({ interpretation: "Current positions are available." }), accountState)).toBe(false);
     expect(validateModelReasoning(modelOutput({ interpretation: "Positions are available, but assets are not." }), accountState)).toBe(false);
     expect(validateModelReasoning(modelOutput({ interpretation: "Completed trades are reconstructed." }), accountState)).toBe(false);
+    expect(validateModelReasoning(modelOutput({ interpretation: "Limited sample size and lack of reconstructed trades." }), accountState)).toBe(true);
+    expect(validateModelReasoning(modelOutput({ interpretation: "The absence of verified completed trades limits what is known." }), accountState)).toBe(true);
+    expect(validateModelReasoning(modelOutput({ interpretation: "Lack of reconstructed trades, but completed trades are reconstructed." }), accountState)).toBe(false);
+    expect(validateModelReasoning(modelOutput({ interpretation: "Lack of reconstructed trades and completed trades are reconstructed." }), accountState)).toBe(false);
+    expect(validateModelReasoning(modelOutput({ interpretation: "Lack of reconstructed trades and positions are open." }), accountState)).toBe(false);
     expect(validateModelReasoning(modelOutput({ interpretation: "All fills were buys." }), accountState)).toBe(false);
     expect(validateModelReasoning(modelOutput({ confidenceReasons: ["Daily candles match only a subset of fills."] }), {
       ...accountState,
@@ -628,7 +623,7 @@ describe("OpenAI evidence interpretation", () => {
       suggestedFollowups: ["Could the matched executions show a profit or loss?"],
     });
     expect(modelReasoningValidationFailures(answer, response)).toEqual([]);
-    const callModel = vi.fn(async () => answer);
+    const callModel = vi.fn(async () => synthesisOutput({ answer: answer.interpretation, evidenceIds: ["E1", "E2"] }));
     const result = await reasonAboutEvidence({ response, callModel });
 
     expect(callModel).toHaveBeenCalledTimes(1);
@@ -644,14 +639,7 @@ describe("OpenAI evidence interpretation", () => {
   });
 
   it("fails closed after one regeneration if unsupported numeric claims persist", async () => {
-    const callModel = vi.fn(async () => modelOutput({
-      finding: { headline: "The fees prove a 99% cost burden.", summary: "Half of the activity carried the known fees." },
-      interpretation: "The fees prove a 99% cost burden.",
-      reasoningPoints: [
-        { kind: "observation", statement: "The fees prove a 99% burden.", rationale: "Half the activity carried fees.", evidenceLabels: ["Known fill fees by coin"], test: null },
-        { kind: "uncertainty", statement: "Half may be incomplete.", rationale: "Financial records were kept separate.", evidenceLabels: [], test: null },
-      ],
-    }));
+    const callModel = vi.fn(async () => synthesisOutput({ answer: "The fees prove a 99% cost burden." }));
     await expect(reasonAboutEvidence({ response: deterministic, callModel })).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
     expect(callModel).toHaveBeenCalledTimes(2);
     expect(validateModelReasoning(modelOutput({ interpretation: "Half of the activity carried the known fees." }), deterministic)).toBe(false);
@@ -662,12 +650,15 @@ describe("OpenAI evidence interpretation", () => {
     expect(isExcessivelyRepetitive(repeated, [{ question: "Earlier", conclusion: "Known fees are 1.2 USDT. This answers the fee question directly. The known total covers fill-level fees in the imported window only." }])).toBe(true);
     const callModel = vi.fn(async (args: { mode: "scout" | "analyst" | "investigator"; prompt: string; retryInstruction?: string }) => {
       void args;
-      return repeated;
+      return synthesisOutput({ answer: repeated.interpretation });
     });
-    await expect(reasonAboutEvidence({ response: deterministic, recent: [{ question: "Earlier", conclusion: "Known fees are 1.2 USDT. This answers the fee question directly. The known total covers fill-level fees in the imported window only." }], callModel })).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+    const previousConclusion = `${deterministic.finding.headline} ${deterministic.finding.summary} ${repeated.interpretation}`;
+    await expect(reasonAboutEvidence({ response: deterministic, recent: [{ question: "Earlier", conclusion: previousConclusion }], callModel })).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
     expect(callModel).toHaveBeenCalledTimes(2);
-    expect(callModel.mock.calls[1][0].retryInstruction).toBe("Answer only the new information need. Build on prior context instead of restating the previous response. Introduce new reasoning or evidence.");
-    expect(callModel.mock.calls[1][0].prompt).toContain("Known fees are 1.2 USDT");
+    expect(callModel.mock.calls[1][0].retryInstruction).toContain("EXCESSIVE_REPETITION");
+    expect(callModel.mock.calls[1][0].retryInstruction).toMatch(/new information need/);
+    expect(callModel.mock.calls[1][0].prompt).toContain(previousConclusion);
+    expect(callModel.mock.calls[1][0].prompt).toBe(callModel.mock.calls[0][0].prompt);
   });
 
   it("keeps a simple fact answer brief and free of analysis scaffolding", async () => {
@@ -680,21 +671,72 @@ describe("OpenAI evidence interpretation", () => {
       evidence: [{ label: "Fills imported", value: "12" }],
       confidence: { level: "high", reasons: ["This value comes directly from the latest completed import summary."] },
     };
-    const callModel = vi.fn(async () => modelOutput({
-      answerKind: "fact",
-      finding: factResponse.finding,
-      interpretation: factResponse.finding.summary,
-      reasoningPoints: [],
-      evidenceLabels: ["Fills imported"],
-      confidence: "high",
-      confidenceReasons: factResponse.confidence.reasons,
-      limitations: [],
-      suggestedFollowups: [],
-    }));
+    const callModel = vi.fn(async () => synthesisOutput({ answer: "You currently have 12 imported fills." }));
     const result = await reasonAboutEvidence({ response: factResponse, callModel });
     expect(result.answerKind).toBe("fact");
     expect(result.reasoningPoints).toEqual([]);
     expect(result.finding.headline).toBe("You currently have 12 imported fills.");
+    expect(result.interpretation).toBe("You currently have 12 imported fills.");
+  });
+
+  it.each([
+    "The account is profitable.",
+    "Your realized PnL is positive.",
+    "Your win rate is known.",
+    "The cost basis is 1.2 USDT.",
+    "Your cost basis is established.",
+    "Fear explains the fees.",
+    "Known fill fees are 1.2 BTC.",
+  ])("rejects unsupported claims through the minimal synthesis adapter: %s", async (answer) => {
+    const callModel = vi.fn(async () => synthesisOutput({ answer }));
+    await expect(reasonAboutEvidence({ response: deterministic, callModel })).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+    expect(callModel).toHaveBeenCalledTimes(2);
+  });
+
+  it("validates uncertainty instead of treating it as a trusted escape hatch", async () => {
+    const callModel = vi.fn(async () => synthesisOutput({ uncertainty: "Your win rate is 99%." }));
+    await expect(reasonAboutEvidence({ response: deterministic, callModel })).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+    expect(callModel).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects nonexistent evidence IDs after one repair without silently dropping them", async () => {
+    const callModel = vi.fn(async () => synthesisOutput({ evidenceIds: ["E1", "E999"] }));
+    await expect(reasonAboutEvidence({ response: deterministic, callModel })).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+    expect(callModel).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not report a blank model answer as successful synthesis", async () => {
+    const callModel = vi.fn(async () => synthesisOutput({ answer: " \n\t " }));
+    await expect(reasonAboutEvidence({ response: deterministic, callModel })).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+    expect(callModel).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects blank uncertainty instead of accepting a meaningless caveat", async () => {
+    const callModel = vi.fn(async () => synthesisOutput({ uncertainty: " \n\t " }));
+    await expect(reasonAboutEvidence({ response: deterministic, callModel })).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+    expect(callModel).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects a contradiction using otherwise valid evidence IDs", async () => {
+    const response: AskResponse = {
+      ...deterministic,
+      evidence: [...deterministic.evidence, { label: "Buy / sell fills", value: "6 buy · 6 sell" }],
+    };
+    const callModel = vi.fn(async () => synthesisOutput({ answer: "All fills were buys.", evidenceIds: ["E2"] }));
+    await expect(reasonAboutEvidence({ response, callModel })).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+    expect(callModel).toHaveBeenCalledTimes(2);
+  });
+
+  it("allows natural uncertainty about unavailable outcomes without fabricated metrics", async () => {
+    const output = synthesisOutput({
+      answer: "The evidence cannot establish profit, win rate, or cost basis. It describes known fill fees only.",
+      uncertainty: "Financial records were kept separate.",
+    });
+    const callModel = vi.fn(async () => output);
+    const result = await reasonAboutEvidence({ response: deterministic, callModel });
+    expect(callModel).toHaveBeenCalledTimes(1);
+    expect(result.interpretation).toContain(output.answer);
+    expect(result.reasoningStatus).toBe("external_llm");
   });
 
   it("shows a safe deterministic fallback for model outages", () => {

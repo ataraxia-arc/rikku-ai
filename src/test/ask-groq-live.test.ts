@@ -59,7 +59,13 @@ it.skipIf(process.env.RIKKU_LIVE_GROQ !== "1")("validates the requested conversa
   const provider: ReasoningProvider = {
     id: raw.id, modelIdentifier: (mode) => raw.modelIdentifier(mode),
     generateStructuredPlan: (request) => paced(() => raw.generateStructuredPlan(request)),
-    generateStructuredResponse: (request) => paced(() => raw.generateStructuredResponse(request)),
+    generateStructuredResponse: (request) => paced(async () => {
+      const output = await raw.generateStructuredResponse(request);
+      // Opt-in local check only: inspect model prose, never credentials or raw provider payloads.
+      const draft = output as { answer?: string; uncertainty?: string | null };
+      report({ event: "live_synthesis_draft", repair: Boolean(request.retryInstruction), answer: draft.answer, uncertainty: draft.uncertainty });
+      return output;
+    }),
   };
   const recent: RecentAskExchange[] = [];
   const questions = [

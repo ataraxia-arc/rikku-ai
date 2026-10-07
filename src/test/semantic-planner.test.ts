@@ -40,6 +40,8 @@ describe("semantic evidence planner", () => {
     const questions = [
       "yo, what patterns jump out of the stuff I did recently?",
       "could ya spot anything unusual in the way I've been active?",
+      "bro what have i actually been doing lately",
+      "u sure about that?",
     ];
     for (const question of questions) {
       const model = provider(basePlan);
@@ -227,6 +229,46 @@ describe("semantic evidence planner", () => {
     expect(body.messages).toHaveLength(1);
     expect(body.messages[0].content).toContain("Tell me what looks different lately");
     expect(body.include_reasoning).toBe(false);
+  });
+
+  it("repairs a summary-only follow-up with precise evidence-tool feedback and unchanged question/context", async () => {
+    const question = "could there be another explanation?";
+    const conversationContext = [{
+      question: "anything stand out about how ive been trading lately?",
+      conclusion: "Observed concentration describes the imported window, not a persistent trait.",
+      findingId: "bounded-prior-finding",
+    }];
+    const invalidPlan = {
+      ...basePlan,
+      needsConversationContext: true,
+      referencedPriorFindingIds: ["bounded-prior-finding"],
+      toolRequests: ["get_import_summary", "run_skeptic_check"],
+    };
+    const repairedPlan = {
+      ...invalidPlan,
+      toolRequests: ["get_import_summary", "analyze_symbol_concentration", "run_skeptic_check"],
+    };
+    const callModel = vi.fn()
+      .mockResolvedValueOnce(invalidPlan)
+      .mockResolvedValueOnce(repairedPlan);
+
+    await expect(planAskSemantically({
+      question, mode: "analyst", provider: provider(basePlan), conversationContext, callModel,
+    })).resolves.toMatchObject(repairedPlan);
+    expect(callModel).toHaveBeenCalledTimes(2);
+    const originalPrompt = callModel.mock.calls[0][0].prompt;
+    const repairPrompt = callModel.mock.calls[1][0].prompt;
+    expect(repairPrompt.startsWith(originalPrompt)).toBe(true);
+    expect(repairPrompt).toContain(JSON.stringify(question));
+    expect(repairPrompt).toContain(JSON.stringify(conversationContext));
+    expect(repairPrompt).toContain("toolRequests:analysis_requires_evidence_tool");
+    expect(repairPrompt).toContain("at least one relevant evidence tool OTHER THAN get_import_summary and run_skeptic_check");
+
+    const stillInvalid = vi.fn().mockResolvedValue(invalidPlan);
+    await expect(planAskSemantically({
+      question, mode: "analyst", provider: provider(basePlan), conversationContext, callModel: stillInvalid,
+    })).rejects.toMatchObject({ failurePaths: ["toolRequests:analysis_requires_evidence_tool"] });
+    expect(stillInvalid).toHaveBeenCalledTimes(2);
   });
 
   it("repairs a schema failure once with the exact failure path, then fails closed", async () => {

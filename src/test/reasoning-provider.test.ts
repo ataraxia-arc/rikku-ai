@@ -57,15 +57,9 @@ describe("reasoning provider abstraction", () => {
 
   it("sends a minimal OpenAI-compatible chat request and parses JSON without relying on strict outputs", async () => {
     const output = {
-      answerKind: "analysis",
-      finding: { headline: "Observed activity.", summary: "Bounded evidence only." },
-      interpretation: "The evidence supports a descriptive observation.",
-      reasoningPoints: [],
-      evidenceLabels: [],
-      confidence: "low",
-      confidenceReasons: [],
-      limitations: [],
-      suggestedFollowups: [],
+      answer: "The evidence supports a descriptive observation.",
+      evidenceIds: ["E1"],
+      uncertainty: "The observation applies only to the imported window.",
     };
     const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () => new Response(JSON.stringify({
       id: "chatcmpl-test",
@@ -88,15 +82,9 @@ describe("reasoning provider abstraction", () => {
 
   it("uses Groq strict JSON Schema mode before independent server-side validation", async () => {
     const output = {
-      answerKind: "fact",
-      finding: { headline: "Twelve fills.", summary: "The import contains 12 fills." },
-      interpretation: "The verified import contains 12 fills.",
-      reasoningPoints: [],
-      evidenceLabels: ["Fills imported"],
-      confidence: "high",
-      confidenceReasons: ["The count comes from the deterministic import summary."],
-      limitations: [],
-      suggestedFollowups: [],
+      answer: "The verified import contains 12 fills.",
+      evidenceIds: ["E1"],
+      uncertainty: null,
     };
     const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () => new Response(JSON.stringify({
       id: "chatcmpl-groq-test",
@@ -115,7 +103,7 @@ describe("reasoning provider abstraction", () => {
     await expect(provider.generateStructuredResponse({
       mode: "analyst",
       prompt: "How many fills do I have?",
-      allowedEvidenceLabels: ["Fills imported", "Known fill fees by coin"],
+      allowedEvidenceIds: ["E1", "E2"],
     })).resolves.toEqual(output);
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
     expect(body.response_format.type).toBe("json_schema");
@@ -124,31 +112,29 @@ describe("reasoning provider abstraction", () => {
       type: "object",
       additionalProperties: false,
       properties: {
-        finding: { properties: { headline: { maxLength: 220 }, summary: { maxLength: 900 } } },
-        interpretation: { maxLength: 1_200 },
-        reasoningPoints: { maxItems: 10 },
-        evidenceLabels: { maxItems: 12, items: { enum: ["Fills imported", "Known fill fees by coin"] } },
-        suggestedFollowups: { maxItems: 4 },
+        answer: { type: "string", maxLength: 1_200 },
+        evidenceIds: { maxItems: 12, items: { enum: ["E1", "E2"] } },
       },
     });
-    expect(body.max_completion_tokens).toBe(2_500);
-    expect(body.reasoning_effort).toBe("low");
+    expect(Object.keys(body.response_format.json_schema.schema.properties)).toEqual(["answer", "evidenceIds", "uncertainty"]);
+    expect(body.max_completion_tokens).toBeLessThanOrEqual(2_000);
+    expect(body.reasoning_effort).toBe("medium");
     expect(body.include_reasoning).toBe(false);
     expect(body.temperature).toBe(0.2);
-    expect(body.messages[0].content).toContain("required strict JSON schema");
-    expect(body.messages[0].content).toContain("never invent financial facts");
+    expect(body.messages[0].content).toMatch(/JSON|schema/);
+    expect(body.messages[0].content).toMatch(/evidence/i);
 
     await expect(provider.generateStructuredResponse({
       mode: "analyst",
       prompt: "Correct the rejected answer",
       retryInstruction: "Avoid the rejected claim.",
-      allowedEvidenceLabels: ["Fills imported", "Known fill fees by coin"],
+      allowedEvidenceIds: ["E1", "E2"],
     })).resolves.toEqual(output);
     const retryBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
-    expect(retryBody.max_completion_tokens).toBe(4_000);
+    expect(retryBody.max_completion_tokens).toBeLessThanOrEqual(2_000);
     expect(body.messages[0].role).toBe("system");
     expect(body.messages[1].role).toBe("user");
-    expect(retryBody.reasoning_effort).toBe("low");
+    expect(retryBody.reasoning_effort).toBe("medium");
     expect(retryBody.response_format).toEqual(body.response_format);
     function checkClosedObjects(schema: Record<string, unknown>) {
       if (schema.type === "object") {
@@ -161,7 +147,18 @@ describe("reasoning provider abstraction", () => {
       }
     }
     checkClosedObjects(body.response_format.json_schema.schema);
-    expect(body.response_format.json_schema.schema.properties.reasoningPoints.items.properties.test.anyOf).toEqual([{ type: "string", maxLength: 500 }, { type: "null" }]);
+    expect(body.response_format.json_schema.schema.properties.uncertainty.anyOf).toEqual([{ type: "string", minLength: 1, maxLength: 400 }, { type: "null" }]);
+
+    await expect(provider.generateStructuredResponse({
+      mode: "analyst",
+      prompt: "Same bounded evidence",
+      retryInstruction: "Rewrite only the rejected output.",
+      allowedEvidenceIds: ["E1", "E2"],
+      jsonObjectRepair: true,
+    })).resolves.toEqual(output);
+    const jsonRepairBody = JSON.parse(String(fetchMock.mock.calls[2][1]?.body));
+    expect(jsonRepairBody.response_format).toEqual({ type: "json_object" });
+    expect(jsonRepairBody.include_reasoning).toBe(false);
   });
 
   it("uses Groq strict JSON schema before independent server-side plan validation", async () => {
